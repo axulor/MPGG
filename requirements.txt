@@ -1,4 +1,7 @@
 torch
 pettingzoo
 wandb
-numpy 
+numpy
+matplotlib
+seaborn
+gymnasium 

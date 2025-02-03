@@ -1,4 +1,5 @@
 import numpy as np
+import random
 
 class Agent:
     def __init__(self, agent_id, state_size, action_size, learning_rate=0.1, discount_factor=0.99):
@@ -9,7 +10,7 @@ class Agent:
         self.discount_factor = discount_factor
         self.q_table = self.initialize_q_table()
         self.current_casino = None  # 当前所在赌场
-        self.is_cooperator = False  # 是否为合作者
+        self.is_cooperator = random.choice([True, False])  # 是否为合作者
 
     def initialize_q_table(self):
         # 初始化Q表

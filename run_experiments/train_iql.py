@@ -1,5 +1,5 @@
 from envs.migratory_pgg_env import MigratoryPGGEnv
-from agents.iql import IndependentQLearningAgent
+from agents.agent import IndependentQLearningAgent
 
 def train():
     env = MigratoryPGGEnv(num_agents=5, num_resources=3)
