@@ -27,7 +27,8 @@ class MigratoryPGGEnv(ParallelEnv):
 
         # 定义智能体
         self.agents = ["agent_" + str(i) for i in range(N)]
-        # 定义观测/动作空间
+        
+        # 定义动作空间
         self.game_action_spaces = {agent: spaces.Discrete(2) for agent in self.agents}  # 0: 不贡献, 1: 贡献
         self.move_action_spaces = {agent: spaces.Discrete(5) for agent in self.agents}  # 0: 上, 1: 下, 2: 左, 3: 右, 4: 不动
 
@@ -51,13 +52,6 @@ class MigratoryPGGEnv(ParallelEnv):
         self.observation_spaces = self.pre_game_observation_spaces.copy()  # 预设为博弈前状态
         self.action_spaces = self.game_action_spaces.copy()  # 预设为博弈前的动作空间
 
-
-    # def observation_space(self, agent):
-    #     """根据当前阶段返回正确的观测空间"""
-    #     if self.phase == "pre_game":
-    #         return self.pre_game_observation_spaces[agent]
-    #     else:
-    #         return self.post_game_observation_spaces[agent]
         
     def observation_space(self, agent):
         """返回正确的 Gym 观测空间"""

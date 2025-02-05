@@ -4,7 +4,7 @@ import torch.optim as optim
 import random
 import numpy as np
 from collections import deque
-from torch.utils.tensorboard import SummaryWriter  # ✅ 添加 TensorBoard
+from torch.utils.tensorboard import SummaryWriter  # 添加 TensorBoard
 
 class DQN(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -36,7 +36,6 @@ class ReplayBuffer:
 class DQNAgent:
     def __init__(self, input_dim, output_dim, lr=1e-3, gamma=0.99, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01, log_dir="logs/dqn/"):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"[DQNAgent] Using device: {self.device}")
 
         self.model = DQN(input_dim, output_dim).to(self.device)
         self.target_model = DQN(input_dim, output_dim).to(self.device)
@@ -51,7 +50,7 @@ class DQNAgent:
 
         self.replay_buffer = ReplayBuffer(10000)
 
-        # ✅ 添加 TensorBoard 记录
+        # 添加 TensorBoard 记录
         self.writer = SummaryWriter(log_dir)
 
     def select_action(self, state_dict, valid_actions):
@@ -89,7 +88,7 @@ class DQNAgent:
 
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-        # ✅ 记录 TensorBoard
+        # 记录 TensorBoard
         self.writer.add_scalar("Loss", loss.item(), episode)
         self.writer.add_scalar("Epsilon", self.epsilon, episode)
 

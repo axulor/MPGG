@@ -1,72 +1,93 @@
-import time
 import numpy as np
-import torch
-from algorithms.dqn import DQNAgent
+import random
 from envs.migratory_pgg_env import MigratoryPGGEnv
+from agents.agent import Agent
 
-# ✅ 打印 GPU 信息
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"[train.py] Using device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
+# 训练参数
+epsilon_initial = 1.0
+decay_rate = 0.995
+epsilon_min = 0.05
+gamma = 0.99
+eta = 0.1
+e_max = 1000  # 最大训练回合
+t_max = 50  # 每个回合的最大时间步
+buffer_size = 1000  # 经验池大小
+batch_size = 32  # 经验回放批量大小
 
 # 初始化环境
-env = MigratoryPGGEnv(L=9, l=3, r_min=1.2, r_max=5.0, N=18)
+env = MigratoryPGGEnv()
+agents = env.initialize_agents()
+num_agents = len(agents)
 
-# 确保环境已正确初始化
-state, _ = env.reset()
+# 初始化 Q 表和经验池
+Q_G = {agent.agent_id: np.zeros((3, 2)) for agent in agents}  # 博弈Q表
+Q_M = {agent.agent_id: np.zeros((4, 5)) for agent in agents}  # 移动Q表
+buffer_G = []
+buffer_M = []
 
-# ✅ 从 `state` 直接计算状态维度
-sample_agent = env.agents[0]
-state_dim = len(state[sample_agent])  # 确保状态正确
-game_action_dim = env.action_space(sample_agent).n
-move_action_dim = env.action_space(sample_agent).n
+epsilon = epsilon_initial
 
-# 创建 DQN 代理
-game_dqn_agent = DQNAgent(state_dim, game_action_dim, log_dir="logs/game_dqn/")
-move_dqn_agent = DQNAgent(state_dim, move_action_dim, log_dir="logs/move_dqn/")
+# 初始化前一个时间步的信息
+prev_o_G = {agent.agent_id: None for agent in agents}
+prev_a_G = {agent.agent_id: None for agent in agents}
+prev_R = {agent.agent_id: None for agent in agents}
+prev_o_M = {agent.agent_id: None for agent in agents}
+prev_a_M = {agent.agent_id: None for agent in agents}
 
-num_episodes = 100
-update_target_every = 5
+for e in range(e_max):
+    observations, _ = env.reset()
+    for t in range(t_max):
+        game_experiences = []
+        move_experiences = []
 
-for episode in range(num_episodes):
-    state, _ = env.reset()
-    done = {agent: False for agent in env.agents}
-    total_reward = 0
+        # 并行博弈阶段
+        for agent in agents:
+            agent_id = agent.agent_id
+            o_G = observations[agent_id]
+            a_G = agent.choose_action(o_G, epsilon)
+            R = env.get_reward(agent, a_G)
 
-    while not all(done.values()):
-        actions = {}
+            if t > 0 and prev_o_G[agent_id] is not None:
+                buffer_G.append((prev_o_G[agent_id], prev_a_G[agent_id], prev_R[agent_id], o_G))
+                if len(buffer_G) > buffer_size:
+                    buffer_G.pop(0)
 
-        if env.phase == "pre_game":
-            for agent in env.agents:
-                actions[agent] = game_dqn_agent.select_action(state[agent], [0, 1])
-        else:
-            for agent in env.agents:
-                valid_moves = list(range(env.action_space(agent).n))
-                actions[agent] = move_dqn_agent.select_action(state[agent], valid_moves)
+            game_experiences.append((agent_id, o_G, a_G, R))
+            prev_o_G[agent_id] = o_G
+            prev_a_G[agent_id] = a_G
+            prev_R[agent_id] = R
 
-        next_state, rewards, terminations, truncations, _ = env.step(actions)
+        # 并行移动阶段
+        for agent in agents:
+            agent_id = agent.agent_id
+            o_M = observations[agent_id]
+            a_M = agent.choose_action(o_M, epsilon)
+            env.move_agents(agent, a_M)
+            
+            if t > 0 and prev_o_M[agent_id] is not None:
+                buffer_M.append((prev_o_M[agent_id], prev_a_M[agent_id], prev_R[agent_id], o_M))
+                if len(buffer_M) > buffer_size:
+                    buffer_M.pop(0)
 
-        for agent in env.agents:
-            if env.phase == "pre_game":
-                game_dqn_agent.replay_buffer.add(state[agent], actions[agent], rewards[agent], next_state[agent], terminations[agent])
-            else:
-                move_dqn_agent.replay_buffer.add(state[agent], actions[agent], rewards[agent], next_state[agent], terminations[agent])
+            move_experiences.append((agent_id, o_M, a_M))
+            prev_o_M[agent_id] = o_M
+            prev_a_M[agent_id] = a_M
 
-        state = next_state
-        done = terminations
-        total_reward += sum(rewards.values())
+        # 经验回放更新 Q_G
+        if len(buffer_G) >= batch_size:
+            batch = random.sample(buffer_G, batch_size)
+            for o_G, a_G, R, o_G_next in batch:
+                target_G = R + gamma * np.max(Q_G[agent_id][o_G_next])
+                Q_G[agent_id][o_G, a_G] = (1 - eta) * Q_G[agent_id][o_G, a_G] + eta * target_G
 
-    game_dqn_agent.train(episode=episode)
-    move_dqn_agent.train(episode=episode)
+        # 经验回放更新 Q_M
+        if len(buffer_M) >= batch_size:
+            batch = random.sample(buffer_M, batch_size)
+            for o_M, a_M, R, o_M_next in batch:
+                target_M = R + gamma * np.max(Q_M[agent_id][o_M_next])
+                Q_M[agent_id][o_M, a_M] = (1 - eta) * Q_M[agent_id][o_M, a_M] + eta * target_M
 
-    if episode % update_target_every == 0:
-        game_dqn_agent.update_target_model()
-        move_dqn_agent.update_target_model()
+        # 动态调整探索率
+        epsilon = max(epsilon * decay_rate, epsilon_min)
 
-    print(f"Episode {episode + 1}, Total Reward: {total_reward}")
-
-    # ✅ 记录总奖励
-    game_dqn_agent.writer.add_scalar("Total Reward", total_reward, episode)
-
-env.close()
-game_dqn_agent.close()
-move_dqn_agent.close()
+    print(f"Episode {e+1}/{e_max} completed, Epsilon: {epsilon:.4f}")

@@ -3,7 +3,7 @@ import random
 
 def test_environment():
     # 创建环境实例
-    env = MigratoryPGGEnv(L=9, l=3, r_min=1.2, r_max=5.0, N=100)
+    env = MigratoryPGGEnv(L=10, l=2, r_min=1.2, r_max=5.0, N=100)
     
     # 重置环境
     initial_state = env.reset()[0]
