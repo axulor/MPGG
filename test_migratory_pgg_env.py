@@ -1,24 +1,15 @@
 from envs.migratory_pgg_env import MigratoryPGGEnv
-import random
 
-def test_environment():
-    # 创建环境实例
-    env = MigratoryPGGEnv(L=10, l=2, r_min=1.2, r_max=5.0, N=100)
-    
-    # 重置环境
-    initial_state = env.reset()[0]
-    print("初始状态:", initial_state)
-    # 可视化环境
-    env.render(mode="human")
-    
+# 创建环境
+env = MigratoryPGGEnv(num_agents=4)
 
-    # 执行一个动作
-    actions = {agent: random.choice([0, 1]) for agent in env.agents}  # 0: 不贡献, 1: 贡献
-    
-    # 可视化环境
-    env.render(mode="human")
+obs, _ = env.reset()
+print("✅ 初始观察:", obs)
 
+for _ in range(10):
+    actions = {agent: env.action_spaces[agent].sample() for agent in env.agents}
+    obs, rewards, dones, truncations, infos = env.step(actions)
+    env.render()
+    print(f"✅ 观察: {obs}, 奖励: {rewards}, 终止: {dones}")
 
-
-if __name__ == "__main__":
-    test_environment() 
+env.close()

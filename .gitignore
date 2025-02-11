@@ -7,3 +7,4 @@ logs/
 *.sqlite3
 *.log
 *.ipynb_checkpoints 
+test/

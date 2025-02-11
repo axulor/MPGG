@@ -10,11 +10,20 @@ class Agent:
         self.discount_factor = discount_factor
         self.q_table = self.initialize_q_table()
         self.current_casino = None  # 当前所在赌场
+        self.last_position = None  # 记录上一帧的位置
         self.is_cooperator = random.choice([True, False])  # 是否为合作者
 
     def initialize_q_table(self):
-        # 初始化Q表
         return np.zeros((self.state_size, self.action_size))
+
+    def set_current_casino(self, casino):
+        """更新赌场位置，同时保存上一次的位置"""
+        if self.current_casino is not None:
+            self.last_position = self.current_casino  # 记录上一帧位置
+        else:
+            self.last_position = casino  # 第一次初始化时，last_position 和 current_casino 相同
+        self.current_casino = casino
+
 
     def choose_action(self, state, epsilon=0.1):
         # 选择动作的策略
