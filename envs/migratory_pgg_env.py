@@ -12,24 +12,29 @@ class MigratoryPGGEnv(ParallelEnv):
     
     metadata = {"render_modes": ["human"], "name": "migratory_pgg_env"}
     
-    def __init__(self, L=5, l=1, r_min=1.5, r_max=4.0, N=150):
+    def __init__(self, L=5, l=1, r_min=1.5, r_max=4.0, N=75):
         super().__init__()
         
         # 关键参数定义
         self.grid_size = L   # 总区域边长大小
         self.casino_size = l     # 每个赌场边长
         self.r_params = (r_min, r_max) # 增益因子范围
+        self.r_params = (float(r_min), float(r_max))
         self.casinos = []  # 赌场列表
         self.N = N # 智能体数量  
         self.phase: str = "pre_game"  # 预设为博弈前阶段
+        self.step_size = 1.0 / (self.grid_size // self.casino_size)  # 赌场之间的步长
+
+        self.casinos = []  # 赌场列表
+        self.agent_names = ["agent_" + str(i) for i in range(N)]  # 仅存储智能体编号
+        self.agents = {}  # 存储智能体实例的字典
+
+        self.timestep = 0 # 时间步计数
 
 
-        # 定义智能体编号
-        self.agents_id = ["agent_" + str(i) for i in range(N)]
-        
         # 定义动作空间
-        self.game_action_spaces = {agent: spaces.Discrete(2) for agent in self.agents}  # 0: 不贡献, 1: 贡献
-        self.move_action_spaces = {agent: spaces.Discrete(5) for agent in self.agents}  # 0: 上, 1: 下, 2: 左, 3: 右, 4: 不动
+        self.game_action_spaces = {agent: spaces.Discrete(2) for agent in self.agent_names}  #字典 0: 不贡献, 1: 贡献 
+        self.move_action_spaces = {agent: spaces.Discrete(5) for agent in self.agent_names}  #字典 0: 上, 1: 下, 2: 左, 3: 右, 4: 不动
 
         # 博弈后的观测空间
         self.post_game_observation_spaces = {
@@ -38,7 +43,7 @@ class MigratoryPGGEnv(ParallelEnv):
                 spaces.Box(low=0.01, high=1.0, shape=(), dtype=np.float32),  # 增益参数 alpha
                 spaces.Box(low=0, high=self.N, shape=(), dtype=np.int32),  # 赌场的智能体数目，最大可能性为 N
                 spaces.Box(low=0, high=self.N, shape=(), dtype=np.int32)   # 赌场的合作智能体数目，最大可能性为 N
-            )) for agent in self.agents
+            )) for agent in self.agent_names
         }
         # 博弈前的观测空间
         self.pre_game_observation_spaces = {
@@ -46,188 +51,184 @@ class MigratoryPGGEnv(ParallelEnv):
                 spaces.Box(low=0.01, high=1.0, shape=(), dtype=np.float32),  # 成本参数 c
                 spaces.Box(low=0.01, high=1.0, shape=(), dtype=np.float32),  # 增益参数 alpha
                 spaces.Box(low=0, high=self.N, shape=(), dtype=np.int32)  # 赌场的智能体数目，最大可能性为 N
-            )) for agent in self.agents
+            )) for agent in self.agent_names
         }
 
-    
-    def observation_space(self, agent):
-        """返回正确的 Gym 观测空间"""
-        if self.phase == "pre_game":
-            return self.pre_game_observation_spaces.get(agent, None)
-        else:
-            return self.post_game_observation_spaces.get(agent, None)
+        # 预设观测空间和动作空间
+        self.phase = "pre_game"
+        self.observation_spaces = self.pre_game_observation_spaces
+        self.action_spaces = self.game_action_spaces
 
+        # 调用 make_world() 来创建赌场和智能体
+        self.make_world()
 
-    def action_space(self, agent):
-        """根据当前阶段返回正确的动作空间"""
-        if self.phase == "pre_game":
-            return self.game_action_spaces[agent]
-        else:
-            return self.move_action_spaces[agent]
+    def make_world(self):
+        """ 创建赌场 & 智能体 """
+        self.create_casinos()
+        self.create_agents()
 
-
-    def action_space(self, agent):
-        """根据智能体所在赌场位置，动态调整可选的移动动作"""
-        if self.phase == "pre_game":
-            return self.game_action_spaces[agent]  # 贡献决策
-
-        # 获取赌场网格信息
+    def create_casinos(self):
+        """ 创建赌场，每个赌场是一个二元数组 (c, alpha) """
         num_casinos_per_row = self.grid_size // self.casino_size
-        step = 1.0 / num_casinos_per_row  # 赌场之间的步长
 
-        # 获取智能体位置
-        agent_obj = self.agent_objects[self.agents.index(agent)]
-        x, y = agent_obj.current_casino  # 赌场坐标
-
-        # 可能的移动动作
-        possible_moves = set([0, 1, 2, 3, 4])  # {上, 下, 左, 右, 不动}
-
-        # 移除非法动作
-        if x <= step:  # 如果赌场在最左边，则不能向左移动
-            possible_moves.discard(2)  # 不能向左
-        if x >= 1.0:  # 如果赌场在最右边，则不能向右移动
-            possible_moves.discard(3)  # 不能向右
-        if y <= step:  # 如果赌场在最下边，则不能向下移动
-            possible_moves.discard(1)  # 不能向下
-        if y >= 1.0:  # 如果赌场在最上边，则不能向上移动
-            possible_moves.discard(0)  # 不能向上
-
-        return spaces.Discrete(len(possible_moves))  # 返回合法动作数量
-
-
-
-
-    def initialize_agents(self):
-        """初始化智能体并均匀分布到赌场。"""
-
-        agents = []
-        num_casinos_row = self.grid_size // self.casino_size
-        total_casinos = num_casinos_row ** 2
-        step = 1 / num_casinos_row
-
-        # 创建所有赌场
-        self.casinos = []  # 确保赌场信息存储在类属性中
-        for row in range(num_casinos_row):
-            for col in range(num_casinos_row):
-                c = (row + 1) * step
-                alpha = (col + 1) * step
+        for row in range(num_casinos_per_row):
+            for col in range(num_casinos_per_row):
+                c = (row + 1) * self.step_size
+                alpha = (col + 1) * self.step_size
                 self.casinos.append((c, alpha))
 
-        # 均匀分配智能体到赌场
+    def create_agents(self):
+        """实例化智能体，每个智能体是一个 Agent 类，并均匀分配到赌场"""
+        self.agents = {}  # 以字典存储智能体
+        total_casinos = len(self.casinos)
+
         agent_id = 0
+        # 均匀分配智能体到赌场
         for casino in self.casinos:
             for _ in range(self.N // total_casinos):
-                agent = Agent(agent_id, state_size=3, action_size=2)
-                agent.set_current_casino(casino)
-                agents.append(agent)
+                agent_name = f"agent_{agent_id}"
+                self.agents[agent_name] = Agent(agent_name)  # 先创建智能体
+                self.agents[agent_name].set_current_casino(casino)  # 绑定赌场
                 agent_id += 1
 
-        # 随机分配剩余的智能体
+        # 处理余数，随机分配到赌场
         random_casinos = random.sample(self.casinos, self.N % total_casinos)
         for casino in random_casinos:
-            agent = Agent(agent_id, state_size=3, action_size=2)
-            agent.set_current_casino(casino)
-            agents.append(agent)
+            agent_name = f"agent_{agent_id}"
+            self.agents[agent_name] = Agent(agent_name)
+            self.agents[agent_name].set_current_casino(casino)
             agent_id += 1
 
-        return agents
-        
+    def get_observation_space(self, agent_name):
+        """返回当前智能体的观测空间"""
+        return self.pre_game_observation[agent_name] if self.phase == "pre_game" else self.post_game_observation[agent_name]
+    
+    
+    def get_pre_game_observation(self):
+        """获取博弈前的观测状态，返回字典 {agent_name: obs}"""
+        observations = {}
+        for agent_name, agent in self.agents.items():
+            m = agent.current_casino  # 获取赌场信息
+            c, alpha = m  # 成本参数和增益因子
+            n = self.get_agent_count(m)  # 当前赌场的智能体数量
+            observations[agent_name] = (c, alpha, n)  # 形成字典格式
+        return observations
 
+    
+    def get_post_game_observation(self):
+        """获取博弈前的观测状态，返回字典 {agent_name: obs}"""
+        observations = {}
+        for agent_name, agent in self.agents.items():
+            m = agent.current_casino  # 获取赌场信息
+            c, alpha = m  # 成本参数和增益因子
+            n = self.get_agent_count(m)  # 当前赌场的智能体数量
+            n_C = self.get_cooperator_count(m)  # 当前赌场的合作者数量
+            observations[agent_name] = (c, alpha, n, n_C)  # 形成字典格式
+        return observations
+    
+
+    def get_agent_count(self, casino):
+        """获取指定赌场的智能体数量。"""
+        return sum(1 for agent in self.agents.values() if agent.current_casino == casino)
+
+    def get_cooperator_count(self, casino):
+        """获取指定赌场的合作者数量。"""
+        return sum(1 for agent in self.agents.values() if agent.current_casino == casino and agent.is_cooperator)
+
+    
+    # action_space, valid_actions = env.action_space(agent_name) 用两个值接收返回值
+    # action_idx = np.random.randint(0, action_space.n)   0, 1, or 2 随机选择可选动作
+    # action = possible_moves[action_idx] 根据随机选择动作索引，获取实际动作
+
+    def get_action_spaces(self):
+        """返回对应阶段的离散动作空间"""
+        return spaces.Discrete(2) if self.phase == "pre_game" else spaces.Discrete(5) # 后续需要过滤非法动作
+    
+
+    def valid_actions(self, agent_name):
+        """代理调用 Agent 实例的合法动作"""
+        return self.agents[agent_name].valid_moves(self.step_size)
+  
+    # action_space = env.action_space(agent)  # 一直是 Discrete(n)
+    # valid_actions = env.get_valid_actions(agent)  # 取合法动作
+
+    # # 选择动作索引
+    # action_idx = np.random.randint(0, len(valid_actions))
+    # actual_action = valid_actions[action_idx]  # 映射到真实动作
+
+        
+    
     def reset(self, seed=None):
         """重置环境到初始状态"""
         self.phase = "pre_game"
-        self.agent_objects = self.initialize_agents()
 
         # 重新初始化时间步计数
         self.timestep = 0
-        self.max_cycles = 200  # 设定最大训练步数
 
-        observations = {
-            agent: obs for agent, obs in zip(self.agents, self.get_pre_game_observation())
-        }
+        # 生成符合 PettingZoo 规范的 observations
+        observations = self.get_pre_game_observation()
 
         self.observation_spaces = self.pre_game_observation_spaces
         self.action_spaces = self.game_action_spaces
 
-        infos = {agent: {} for agent in self.agents}  # PettingZoo 规范
+        infos = {agent: {} for agent in self.agents.keys()}  # PettingZoo 规范
         return observations, infos
+
 
 
     def step(self, actions):
         """根据当前阶段处理不同类型的决策"""
-        rewards = {agent: 0 for agent in self.agents}
-
+        rewards = {agent: 0 for agent in self.agents.keys()}  # 遍历智能体 ID
+        # print(rewards)
         if self.phase == "pre_game":
             # 处理贡献决策
-            for agent, game_action in actions.items():
-                agent_obj = self.agent_objects[self.agents.index(agent)]
-                rewards[agent] = self.get_reward(agent_obj, game_action)
+            for agent_name, game_action in actions.items():
+                agent = self.agents[agent_name]  # 直接通过字典获取智能体对象
+                # print(f"智能体 {agent_name} 的赌场: {agent.current_casino}")
+                rewards[agent_name] = self.get_reward(agent, game_action) # 计算奖励
+                # print(f"智能体 {agent_name} 的奖励: {rewards[agent_name]}")
 
             # 进入博弈后阶段
             self.phase = "post_game"
-            observations = {agent: obs for agent, obs in zip(self.agents, self.get_post_game_observation())}
+            observations = self.get_post_game_observation()  # 直接返回字典 {agent: obs}
             self.observation_spaces = self.post_game_observation_spaces
             self.action_spaces = self.move_action_spaces
 
         else:
-            # 处理移动决策
-            for agent, move_action in actions.items():
-                agent_obj = self.agent_objects[self.agents.index(agent)]
-                self.move_agents(agent_obj, move_action)
+            for agent_name, move_action in actions.items():
+                agent = self.agents[agent_name]
+                # old_position = agent.current_casino  # 记录移动前的位置
+
+                self.move_agents(agent_name, move_action)  # 执行移动
+
+                # new_position = agent.current_casino  # 移动后的新位置
+                # print(f"{agent_name} 从 {old_position} 移动到 {new_position}，执行动作 {move_action}")
+
 
             # 重新进入博弈前阶段
             self.phase = "pre_game"
-            observations = {agent: obs for agent, obs in zip(self.agents, self.get_pre_game_observation())}
+            observations = self.get_pre_game_observation()  # 直接返回字典 {agent: obs}
             self.observation_spaces = self.pre_game_observation_spaces
             self.action_spaces = self.game_action_spaces
 
-        terminations = {agent: False for agent in self.agents}
-        truncations = {agent: False for agent in self.agents}
-        infos = {agent: {} for agent in self.agents}
+        terminations = {agent: False for agent in self.agents.keys()}
+        truncations = {agent: False for agent in self.agents.keys()}
+        infos = {agent: {} for agent in self.agents.keys()}
 
         return observations, rewards, terminations, truncations, infos
 
 
 
-
-    def get_pre_game_observation(self):
-        """获取博弈前的观测状态。"""
-        observations = []
-        for agent in self.agent_objects:  # 使用 agent_objects
-            m = agent.current_casino  # 当前赌场
-            c, alpha = m  # 成本参数和增益因子
-            n = self.get_agent_count(m)  # 当前赌场的智能体数量
-            observations.append((c, alpha, n))
-        return observations
-
-    def get_post_game_observation(self):
-        """获取博弈后的观测状态。"""
-        observations = []
-        for agent in self.agent_objects:  # 使用 agent_objects
-            m = agent.current_casino  # 当前赌场
-            c, alpha = m  # 成本参数和增益因子
-            n = self.get_agent_count(m)  # 当前赌场的智能体数量
-            n_C = self.get_cooperator_count(m)  # 当前赌场的合作者数量
-            observations.append((c, alpha, n, n_C))
-        return observations
-
-    def get_agent_count(self, casino):
-        """获取指定赌场的智能体数量。"""
-        return sum(1 for agent in self.agent_objects if agent.current_casino == casino)
-
-    def get_cooperator_count(self, casino):
-        """获取指定赌场的合作者数量。"""
-        return sum(1 for agent in self.agent_objects if agent.current_casino == casino and agent.is_cooperator)
-
     def get_reward(self, agent, game_action):
         """计算并返回智能体在当前状态下的奖励。"""
+
         m = agent.current_casino
         c, alpha = m  # 从赌场索引中获取成本和增益因子
         n = self.get_agent_count(m)
         n_C = self.get_cooperator_count(m)
-        
         # 计算增益因子 r
         r = self.r_params[0] + (self.r_params[1] - self.r_params[0]) * alpha
+        
         
         # 计算奖励
         if game_action == 1:  # 如果智能体选择合作
@@ -235,7 +236,6 @@ class MigratoryPGGEnv(ParallelEnv):
         else:  # 如果智能体选择背叛
             reward = (r * n_C) / n
 
-        
         return reward
 
     def check_done(self):
@@ -243,33 +243,28 @@ class MigratoryPGGEnv(ParallelEnv):
         pass  # 当前不执行任何操作
 
 
-    def move_agents(self, agent_obj, move_action):
-        """根据智能体的迁移策略更新其赌场位置，并防止越界"""
+    def move_agents(self, agent_name, move_action):
+        """ 根据智能体的迁移策略更新其赌场位置 """
+        
+        agent = self.agents[agent_name]  # 获取智能体实例
+        old_x, old_y = agent.current_casino  # 获取当前赌场位置
 
-        # 计算赌场网格
-        num_casinos_per_row = self.grid_size // self.casino_size  # 计算每行赌场数
-        step = 1.0 / num_casinos_per_row  # 每个赌场的步长（网格大小）
-
-        # 获取智能体的当前位置
-        old_x, old_y = agent_obj.current_casino
-
-        # 移动增量
+        # 预定义移动增量映射 {上, 下, 左, 右, 不动}
         move_delta = {
-            0: (0, step),   # 上移
-            1: (0, -step),  # 下移
-            2: (-step, 0),  # 左移
-            3: (step, 0),   # 右移
-            4: (0, 0)      # 不动
+            0: (0, self.step_size),   # 上移
+            1: (0, -self.step_size),  # 下移
+            2: (-self.step_size, 0),  # 左移
+            3: (self.step_size, 0),   # 右移
+            4: (0, 0)            # 不动
         }
 
-        dx, dy = move_delta[move_action]
-
-        # 计算新位置，并限制在赌场边界内
-        new_x = max(step, min(1.0 - step, old_x + dx))
-        new_y = max(step, min(1.0 - step, old_y + dy))
+        # 直接获取新的位置，无需额外边界检查
+        dx, dy = move_delta[move_action]  
+        new_x, new_y = old_x + dx, old_y + dy
 
         # 更新智能体的位置
-        agent_obj.set_current_casino((new_x, new_y))
+        agent.set_current_casino((new_x, new_y))
+
 
 
     def render(self):

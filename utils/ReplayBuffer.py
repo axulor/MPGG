@@ -1,32 +1,29 @@
 import random
 import numpy as np
 import torch
+from collections import deque
 
 class ReplayBuffer:
-    """
-    经验回放缓冲区 (Replay Buffer)
-    用于存储训练数据，并随机采样用于训练
-
-    :param buffer_size: 缓冲区大小
-    :param batch_size: 训练时采样的 batch 大小
-    """
-
-    def __init__(self, buffer_size, batch_size):
+    def __init__(self, buffer_size, batch_size=32, device=None):
+        """
+        经验回放缓冲区
+        :param buffer_size: 经验池大小
+        :param batch_size: 每次训练采样的大小
+        :param device: 运行设备
+        """
         self.buffer_size = buffer_size
         self.batch_size = batch_size
-        self.memory = []  # 存储经验数据
-        self.position = 0  # 记录当前存储位置
+        self.device = torch.device(device if device else ("cuda:0" if torch.cuda.is_available() else "cpu"))
 
-    def push(self, state, action, reward, next_state, done):
+        # 经验池
+        self.memory = deque(maxlen=buffer_size)
+    
+    def add(self, state, action, reward, next_state, done):
         """
-        存储一个经验
+        存储一个经验 (s, a, r, s', done)
         """
-        if len(self.memory) < self.buffer_size:
-            self.memory.append(None)
-
-        self.memory[self.position] = (state, action, reward, next_state, done)
-        self.position = (self.position + 1) % self.buffer_size  # 维护循环存储
-
+        self.memory.append((state, action, reward, next_state, done))
+    
     def sample(self):
         """
         随机采样一个 batch
@@ -35,15 +32,28 @@ class ReplayBuffer:
         states, actions, rewards, next_states, dones = zip(*batch)
 
         return (
-            torch.tensor(np.array(states), dtype=torch.float32),
-            torch.tensor(actions, dtype=torch.int64),
-            torch.tensor(rewards, dtype=torch.float32),
-            torch.tensor(np.array(next_states), dtype=torch.float32),
-            torch.tensor(dones, dtype=torch.float32),
+            torch.tensor(np.array(states), dtype=torch.float32).to(self.device),
+            torch.tensor(actions, dtype=torch.int64).to(self.device),
+            torch.tensor(rewards, dtype=torch.float32).to(self.device),
+            torch.tensor(np.array(next_states), dtype=torch.float32).to(self.device),
+            torch.tensor(dones, dtype=torch.float32).to(self.device),
         )
-
+    
     def __len__(self):
         """
         返回当前存储的经验数量
         """
         return len(self.memory)
+
+    def clear(self):
+        """
+        清空经验池
+        """
+        self.memory.clear()
+    
+    def advance_step(self):
+        """
+        维护 buffer_m 经验池，仅保留最新的移动经验
+        """
+        if len(self.memory) > self.buffer_size:
+            self.memory.popleft()

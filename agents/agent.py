@@ -2,55 +2,40 @@ import numpy as np
 import random
 
 class Agent:
-    def __init__(self, agent_id, state_size, action_size, learning_rate=0.1, discount_factor=0.99):
-        self.agent_id = agent_id
-        self.state_size = state_size
-        self.action_size = action_size
-        self.learning_rate = learning_rate
-        self.discount_factor = discount_factor
-        self.q_table = self.initialize_q_table()
+    def __init__(self, agent_id):
+        self.agent_id = agent_id # 智能体编号
         self.current_casino = None  # 当前所在赌场
-        self.last_position = None  # 记录上一帧的位置
-        self.is_cooperator = random.choice([True, False])  # 是否为合作者
+        self.last_casino = None  # 上一次所在赌场的位置
+        self.is_cooperator = random.choice([True, False])  # 初始化策略
+        # self.valid_moves = self.compute_valid_actions()  # 初始化合法动作
 
-    def initialize_q_table(self):
-        return np.zeros((self.state_size, self.action_size))
 
     def set_current_casino(self, casino):
-        """更新赌场位置，同时保存上一次的位置"""
+        """更新所处的赌场位置，同时保存上一次的位置"""
         if self.current_casino is not None:
-            self.last_position = self.current_casino  # 记录上一帧位置
+            self.last_casino = self.current_casino  # 记录上一帧位置
         else:
-            self.last_position = casino  # 第一次初始化时，last_position 和 current_casino 相同
+            self.last_casino = casino  # 第一次初始化时，last_position 和 current_casino 相同
         self.current_casino = casino
 
 
-    def choose_action(self, state, epsilon=0.1):
-        # 选择动作的策略
-        if np.random.rand() < epsilon:
-            return np.random.choice(self.action_size)  # 探索
-        else:
-            return np.argmax(self.q_table[state])  # 利用
+    def valid_moves(self, step_size):
+        """计算智能体在当前位置的合法移动动作"""
+        x, y = self.current_casino
+        possible_moves = {0, 1, 2, 3, 4}  # {上, 下, 左, 右, 不动}
 
-    def update_q_table(self, state, action, reward, next_state):
-        # 更新Q表
-        best_next_action = np.argmax(self.q_table[next_state])
-        td_target = reward + self.discount_factor * self.q_table[next_state, best_next_action]
-        td_error = td_target - self.q_table[state, action]
-        self.q_table[state, action] += self.learning_rate * td_error
+        if x <= step_size:
+            possible_moves.discard(2)  # 不能向左
+        if x >= 1.0:
+            possible_moves.discard(3)  # 不能向右
+        if y <= step_size:
+            possible_moves.discard(1)  # 不能向下
+        if y >= 1.0:
+            possible_moves.discard(0)  # 不能向上
 
-    def set_current_casino(self, casino):
-        # 设置当前所在赌场
-        self.current_casino = casino
+        return sorted(possible_moves)
 
-    def set_cooperator_status(self, status):
-        # 设置是否为合作者
-        self.is_cooperator = status
-
-    def save_model(self, file_path):
-        # 保存模型
-        raise NotImplementedError("This method should be overridden by subclasses.")
-
-    def load_model(self, file_path):
-        # 加载模型
-        raise NotImplementedError("This method should be overridden by subclasses.") 
+    # def update_position(self, new_casino):
+    #     """更新智能体位置，并重新计算合法动作"""
+    #     self.current_casino = new_casino
+    #     self.valid_moves = self.compute_valid_actions()  # 重新计算合法动作  
