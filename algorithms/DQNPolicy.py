@@ -7,8 +7,8 @@ from gymnasium import spaces
 from utils.replaybuffer import ReplayBuffer
 
 class DQNPolicy:
-    def __init__(self,  action_spaces: dict, 
-                 lr=1e-3, gamma=0.99, buffer_size=10000, batch_size=32, device="cpu"):
+    def __init__(self,  action_spaces, 
+                lr=1e-3, gamma=0.99, buffer_size=10000, batch_size=32, device="cpu"):
         self.device = device
         self.action_spaces = action_spaces  # 存储不同阶段的动作空间
         self.gamma = gamma
@@ -39,8 +39,6 @@ class DQNPolicy:
         model = nn.Sequential(
             nn.Linear(obs_dim, 64),
             nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
             nn.Linear(64, action_dim)
         ).to(self.device)
 
@@ -51,7 +49,7 @@ class DQNPolicy:
                 layer.bias.data.fill_(0.01)  # 初始化偏置
         return model
 
-    def select_action(self, obs, epsilon=0.1, phase="game", valid_moves=None):
+    def select_action(self, obs, epsilon, phase="game", valid_moves=None):
         """ 选择动作，确保 move 阶段只选择合法动作 """
         if np.random.rand() < epsilon:
             if phase == "move" and valid_moves is not None:

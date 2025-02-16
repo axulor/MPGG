@@ -99,33 +99,40 @@ class MigratoryPGGEnv(ParallelEnv):
             self.agents[agent_name].set_current_casino(casino)
             agent_id += 1
 
+            
     def get_observation_space(self, agent_name):
-        """返回当前智能体的观测空间"""
-        return self.pre_game_observation[agent_name] if self.phase == "pre_game" else self.post_game_observation[agent_name]
-    
+        """返回单个智能体的观测空间"""
+        
+        agent = self.agents[agent_name]  # 直接获取该智能体对象
+        
+        if self.phase == "pre_game":
+            m = agent.current_casino
+            c, alpha = m
+            n = self.get_agent_count(m)
+            return (c, alpha, n)  # 返回元组
+        else:
+            m = agent.current_casino
+            c, alpha = m
+            n = self.get_agent_count(m)
+            n_C = self.get_cooperator_count(m)
+            return (c, alpha, n, n_C)  # 返回元组
+        
+    def get_observation_spaces(self, phase):
+        """返回所有智能体的观测空间, 统一管理"""
+        if phase == "pre_game":
+            return self.get_pre_game_observation()
+        else:
+            return self.get_post_game_observation()
     
     def get_pre_game_observation(self):
-        """获取博弈前的观测状态，返回字典 {agent_name: obs}"""
-        observations = {}
-        for agent_name, agent in self.agents.items():
-            m = agent.current_casino  # 获取赌场信息
-            c, alpha = m  # 成本参数和增益因子
-            n = self.get_agent_count(m)  # 当前赌场的智能体数量
-            observations[agent_name] = (c, alpha, n)  # 形成字典格式
-        return observations
+        """获取博弈前的全局观测状态, 返回字典 {agent_name: obs}"""
+        return {agent_name: self.get_observation_space(agent_name) for agent_name in self.agents}
 
-    
+
     def get_post_game_observation(self):
-        """获取博弈前的观测状态，返回字典 {agent_name: obs}"""
-        observations = {}
-        for agent_name, agent in self.agents.items():
-            m = agent.current_casino  # 获取赌场信息
-            c, alpha = m  # 成本参数和增益因子
-            n = self.get_agent_count(m)  # 当前赌场的智能体数量
-            n_C = self.get_cooperator_count(m)  # 当前赌场的合作者数量
-            observations[agent_name] = (c, alpha, n, n_C)  # 形成字典格式
-        return observations
-    
+        """获取博弈后的全局观测状态, 返回字典 {agent_name: obs}"""
+        return {agent_name: self.get_observation_space(agent_name) for agent_name in self.agents}
+        
 
     def get_agent_count(self, casino):
         """获取指定赌场的智能体数量。"""
@@ -148,7 +155,7 @@ class MigratoryPGGEnv(ParallelEnv):
     def valid_actions(self, agent_name):
         """代理调用 Agent 实例的合法动作"""
         return self.agents[agent_name].valid_moves(self.step_size)
-  
+
     # action_space = env.action_space(agent)  # 一直是 Discrete(n)
     # valid_actions = env.get_valid_actions(agent)  # 取合法动作
 
@@ -156,8 +163,6 @@ class MigratoryPGGEnv(ParallelEnv):
     # action_idx = np.random.randint(0, len(valid_actions))
     # actual_action = valid_actions[action_idx]  # 映射到真实动作
 
-        
-    
     def reset(self, seed=None):
         """重置环境到初始状态"""
         self.phase = "pre_game"
@@ -172,21 +177,19 @@ class MigratoryPGGEnv(ParallelEnv):
         self.action_spaces = self.game_action_spaces
 
         infos = {agent: {} for agent in self.agents.keys()}  # PettingZoo 规范
-        return observations, infos
+        return observations, infos # 返回观测空间的字典
 
 
 
     def step(self, actions):
         """根据当前阶段处理不同类型的决策"""
         rewards = {agent: 0 for agent in self.agents.keys()}  # 遍历智能体 ID
-        # print(rewards)
         if self.phase == "pre_game":
             # 处理贡献决策
             for agent_name, game_action in actions.items():
                 agent = self.agents[agent_name]  # 直接通过字典获取智能体对象
-                # print(f"智能体 {agent_name} 的赌场: {agent.current_casino}")
+                agent.is_cooperator = (game_action == 1)
                 rewards[agent_name] = self.get_reward(agent, game_action) # 计算奖励
-                # print(f"智能体 {agent_name} 的奖励: {rewards[agent_name]}")
 
             # 进入博弈后阶段
             self.phase = "post_game"
@@ -265,7 +268,9 @@ class MigratoryPGGEnv(ParallelEnv):
         # 更新智能体的位置
         agent.set_current_casino((new_x, new_y))
 
-
+    def coopration_rate(self):
+        """计算合作率"""
+        return sum(1 for agent in self.agents.values() if agent.is_cooperator) / len(self.agents)
 
     def render(self):
         """调用外部可视化类""" # TODO

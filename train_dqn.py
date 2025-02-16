@@ -7,15 +7,15 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 # 训练参数
-num_episodes = 100
-max_timesteps = 200
-learning_rate = 5e-5
-buffer_size = 10000
+num_episodes = 150
+max_timesteps = 100
+learning_rate = 1e-5
+buffer_size = 1000
 batch_size = 16
 epsilon = 1.0
 epsilon_min = 0.05
-epsilon_decay = 0.995
-gamma = 0.95
+epsilon_decay = 0.95
+gamma = 0.92
 
 # 设备
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -37,6 +37,7 @@ for episode in tqdm(range(1, num_episodes + 1), desc="Training Progress", positi
     prev_experiences = {agent: {"game": None, "move": None} for agent in env.agent_names}
     episode_reward = 0
     episode_loss = []
+    episode_coopration_rate = 0
 
     for t in tqdm(range(max_timesteps), desc=f"Episode {episode}", position=1, leave=False):
         actions = {}
@@ -99,11 +100,13 @@ for episode in tqdm(range(1, num_episodes + 1), desc="Training Progress", positi
             if loss_m is not None:
                 episode_loss.append(loss_m)
 
-        # 逐步衰减探索率
-        epsilon = max(epsilon * epsilon_decay, epsilon_min)
+    # 逐步衰减探索率
+    epsilon = max(epsilon * epsilon_decay, epsilon_min)
+
+    episode_coopration_rate = env.coopration_rate()
 
     # 更新目标 Q 网络
-    if episode % 5 == 0:
+    if episode % 2 == 0:
         for agent in env.agent_names:
             policies[agent].update_target_network()
 
@@ -112,7 +115,15 @@ for episode in tqdm(range(1, num_episodes + 1), desc="Training Progress", positi
     writer.add_scalar("Reward", episode_reward, episode)
     writer.add_scalar("Loss", np.mean(episode_loss) if episode_loss else 0, episode)
     writer.add_scalar("Epsilon", epsilon, episode)
+    writer.add_scalar("Coopration_rate", np.mean(episode_coopration_rate) if episode_coopration_rate else 0, episode)
 
-    print(f"Episode {episode}, Reward: {episode_reward:.2f}, Loss: {np.mean(episode_loss) if episode_loss else 0:.4f}, Epsilon: {epsilon:.3f}")
+    print("\n")
+    print(f"Episode {episode}\n"
+        f"Reward: {episode_reward:.2f}\n"
+        f"Loss: {np.mean(episode_loss) if episode_loss else 0:.4f}\n"
+        f"Epsilon: {epsilon:.3f}\n"
+        f"Cooperation Rate: {episode_coopration_rate:.3f}")
+
+    print("\n")
 
 writer.close()
