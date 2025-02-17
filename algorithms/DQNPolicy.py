@@ -108,3 +108,24 @@ class DQNPolicy:
         """ 更新目标 Q 网络 """
         self.target_q_g.load_state_dict(self.q_g.state_dict())
         self.target_q_m.load_state_dict(self.q_m.state_dict())
+
+    def get_q_values(self, obs, phase="game"):
+        """
+        将观测 obs 转为 tensor 后，通过对应的 Q 网络前向传播，
+        返回一个 numpy 数组格式的 Q 值向量。
+        
+        参数:
+        obs: 环境观测，期望为可以转为 float32 数组的格式
+        phase: 字符串，"game" 表示博弈阶段，"move" 表示移动阶段
+        
+        返回:
+        Q 值向量 (numpy 数组)
+        """
+        obs_tensor = torch.tensor(np.array(obs, dtype=np.float32), device=self.device).unsqueeze(0)
+        with torch.no_grad():
+            if phase == "game":
+                q_vals = self.q_g(obs_tensor)
+            else:
+                q_vals = self.q_m(obs_tensor)
+        return q_vals.cpu().numpy().squeeze()
+

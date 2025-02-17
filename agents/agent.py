@@ -21,19 +21,20 @@ class Agent:
 
     def valid_moves(self, step_size):
         """计算智能体在当前位置的合法移动动作"""
-        x, y = self.current_casino
-        possible_moves = {0, 1, 2, 3, 4}  # {上, 下, 左, 右, 不动}
+        # x, y = self.current_casino
+        # possible_moves = {0, 1, 2, 3, 4}  # {上, 下, 左, 右, 不动}
 
-        if x <= step_size:
-            possible_moves.discard(2)  # 不能向左
-        if x >= 1.0:
-            possible_moves.discard(3)  # 不能向右
-        if y <= step_size:
-            possible_moves.discard(1)  # 不能向下
-        if y >= 1.0:
-            possible_moves.discard(0)  # 不能向上
+        # if x <= step_size:
+        #     possible_moves.discard(2)  # 不能向左
+        # if x >= 1.0:
+        #     possible_moves.discard(3)  # 不能向右
+        # if y <= step_size:
+        #     possible_moves.discard(1)  # 不能向下
+        # if y >= 1.0:
+        #     possible_moves.discard(0)  # 不能向上
 
-        return sorted(possible_moves)
+        # return sorted(possible_moves)
+        return [0, 1, 2, 3, 4]
 
     # def update_position(self, new_casino):
     #     """更新智能体位置，并重新计算合法动作"""

@@ -6,13 +6,15 @@ import random
 import numpy as np
 from typing import List, Type, Union
 from envs.visualizer import PygameVisualizer
+import os
+from datetime import datetime
 
 class MigratoryPGGEnv(ParallelEnv):
     """ 多智能体迁徙公共物品博弈环境 (Migratory Public Goods Game) """
     
     metadata = {"render_modes": ["human"], "name": "migratory_pgg_env"}
     
-    def __init__(self, L=5, l=1, r_min=1.5, r_max=4.0, N=75):
+    def __init__(self, L=5, l=1, r_min=1.5, r_max=6.0, N=150):
         super().__init__()
         
         # 关键参数定义
@@ -25,11 +27,12 @@ class MigratoryPGGEnv(ParallelEnv):
         self.phase: str = "pre_game"  # 预设为博弈前阶段
         self.step_size = 1.0 / (self.grid_size // self.casino_size)  # 赌场之间的步长
 
-        self.casinos = []  # 赌场列表
         self.agent_names = ["agent_" + str(i) for i in range(N)]  # 仅存储智能体编号
         self.agents = {}  # 存储智能体实例的字典
 
         self.timestep = 0 # 时间步计数
+
+        self.run_dir = None
 
 
         # 定义动作空间
@@ -76,6 +79,20 @@ class MigratoryPGGEnv(ParallelEnv):
                 c = (row + 1) * self.step_size
                 alpha = (col + 1) * self.step_size
                 self.casinos.append((c, alpha))
+
+    # def create_casinos(self):
+    #     """ 创建赌场并随机打乱，每个赌场是一个二元数组 (c, alpha) """
+    #     num_casinos_per_row = self.grid_size // self.casino_size
+    #     coords = []
+    #     for row in range(num_casinos_per_row):
+    #         for col in range(num_casinos_per_row):
+    #             c = (row + 1) * self.step_size
+    #             alpha = (col + 1) * self.step_size
+    #             coords.append((c, alpha))
+
+    #     random.shuffle(coords)
+    #     self.casinos = coords
+
 
     def create_agents(self):
         """实例化智能体，每个智能体是一个 Agent 类，并均匀分配到赌场"""
@@ -247,34 +264,79 @@ class MigratoryPGGEnv(ParallelEnv):
 
 
     def move_agents(self, agent_name, move_action):
-        """ 根据智能体的迁移策略更新其赌场位置 """
-        
-        agent = self.agents[agent_name]  # 获取智能体实例
-        old_x, old_y = agent.current_casino  # 获取当前赌场位置
+        """
+        离散环状世界:
+        - 坐标只能是 step_size, 2*step_size, ..., 1.0
+        - 若在 1.0 处继续向外移, 则绕回 step_size
+        - 同理在 step_size 处往反方向移动则回到 1.0
+        """
+        agent = self.agents[agent_name]
+        old_x, old_y = agent.current_casino  # 离散坐标, 比如 0.2/0.4/1.0 等
 
-        # 预定义移动增量映射 {上, 下, 左, 右, 不动}
-        move_delta = {
-            0: (0, self.step_size),   # 上移
-            1: (0, -self.step_size),  # 下移
-            2: (-self.step_size, 0),  # 左移
-            3: (self.step_size, 0),   # 右移
-            4: (0, 0)            # 不动
+        # 如果尚未构建 coords 和 coord_to_idx，可以在 __init__ 或 create_casinos() 里一次性完成
+        # 这里演示写在 move_agents() 中, 也行, 但最好只执行一次
+        step_size = self.step_size
+        n = int(round(1.0 / step_size))  # 如果 step_size=0.2 => n=5
+        # 构建离散坐标列表
+        coords = [step_size * (i + 1) for i in range(n)]  # [0.2, 0.4, 0.6, 0.8, 1.0]
+        # 建立 "坐标 -> 索引" 字典, 避免用 list.index() 时出现浮点比较
+        coord_to_idx = {val: i for i, val in enumerate(coords)}
+
+        # 定义动作 -> 在 x,y 上的“索引增量”
+        # move_action: 0=上,1=下,2=左,3=右,4=不动
+        # x_idx+1 => 右移一格, x_idx-1 => 左移, y_idx+1 => 上移, y_idx-1 => 下移
+        move_delta_idx = {
+            0: (0, +1),   # 上
+            1: (0, -1),   # 下
+            2: (-1, 0),   # 左
+            3: (+1, 0),   # 右
+            4: (0,  0)    # 不动
         }
 
-        # 直接获取新的位置，无需额外边界检查
-        dx, dy = move_delta[move_action]  
-        new_x, new_y = old_x + dx, old_y + dy
+        dx_idx, dy_idx = move_delta_idx[move_action]
 
-        # 更新智能体的位置
+        # 找到 old_x, old_y 的“索引”
+        old_x_idx = coord_to_idx[old_x]
+        old_y_idx = coord_to_idx[old_y]
+
+        # 计算新索引 (mod n) => 环状
+        new_x_idx = (old_x_idx + dx_idx) % n
+        new_y_idx = (old_y_idx + dy_idx) % n
+
+        # 映射回浮点坐标
+        new_x = coords[new_x_idx]  
+        new_y = coords[new_y_idx]
+
+        # 更新智能体的位置 (仍是离散值)
         agent.set_current_casino((new_x, new_y))
+
+
+
 
     def coopration_rate(self):
         """计算合作率"""
         return sum(1 for agent in self.agents.values() if agent.is_cooperator) / len(self.agents)
 
-    def render(self):
-        """调用外部可视化类""" # TODO
-        self.visualizer.render()
+    def render(self, t):
+        """
+        1) 如果本环境还没有 run_dir，第一次调用时创建带时间戳的文件夹
+        2) 创建或更新 self.visualizer
+        3) 调用 self.visualizer.render(t)
+        """
+        if self.run_dir is None:
+            # 只在第一次调用时进来
+            root_folder = "pics"
+            os.makedirs(root_folder, exist_ok=True)
+
+            timestamp_folder = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.run_dir = os.path.join(root_folder, timestamp_folder)
+            os.makedirs(self.run_dir, exist_ok=True)
+
+        
+        self.visualizer = PygameVisualizer(self, self.run_dir)
+
+        # 调用可视化器的绘制方法
+        self.visualizer.render(t)
 
 
 
