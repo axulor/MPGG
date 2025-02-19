@@ -59,7 +59,7 @@ class PygameVisualizer:
     def render(self, t=0, mode="human"):
         """使用 Rectangle + Text 绘制通用可扩展网格，确保刻度严格对齐方格中央, 并将图像保存到 pics/时间戳文件夹下。"""
 
-        fig, ax = plt.subplots(figsize=(4, 4))
+        fig, ax = plt.subplots(figsize=(6, 6))
         # 计算赌场网格大小
         step_size = 1.0 / self.num_casinos  # 计算每个小方格的边长
         # 确保刻度严格在小方格中央
@@ -129,105 +129,16 @@ class PygameVisualizer:
             Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=8, label='Defector')
         ]
         ax.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, 1.1), ncol=2, fontsize=12)
-        ax.annotate(r"$c$", xy=(0.90, -0.05), xycoords='axes fraction', fontsize=20, ha='left', va='center')
-        ax.annotate(r"$\alpha$", xy=(-0.05, 0.90), xycoords='axes fraction', fontsize=20, ha='center', va='bottom')
+        ax.annotate(r"$\alpha$", xy=(0.90, -0.10), xycoords='axes fraction', fontsize=20, ha='left', va='center')
+        ax.annotate(r"$c$", xy=(-0.10, 0.90), xycoords='axes fraction', fontsize=20, ha='center', va='bottom')
+
 
 
         # 保存文件
         file_path = os.path.join(self.run_dir, f"{t}.png")
         plt.tight_layout()
-        plt.savefig(file_path)
+        plt.savefig(file_path, dpi=300)
         plt.close(fig)
         # 若需要调试:
         # print(f"Saved figure to {file_path}")
     
-
-
-
-    # def render_shuffle(self, t=0, mode="human"):
-    #     """
-    #     在保留原有网格外观的前提下，将 (c, alpha) 随机打乱分配到
-    #     num_casinos x num_casinos 的方格里，并在方格内画出对应赌场与智能体。
-    #     """
-    #     fig, ax = plt.subplots(figsize=(4, 4))
-
-    #     # === 1) 网格基本参数 ===
-    #     step_size = 1.0 / self.num_casinos
-    #     grid_lines = np.linspace(0, 1, self.num_casinos + 1)
-
-    #     # 绘制网格方格（和之前一样）
-    #     for i in range(self.num_casinos):
-    #         for j in range(self.num_casinos):
-    #             x_min = j * step_size
-    #             y_min = i * step_size
-    #             rect = patches.Rectangle((x_min, y_min),
-    #                                     step_size, step_size,
-    #                                     linewidth=1, edgecolor='black', facecolor='none')
-    #             ax.add_patch(rect)
-
-    #     # === 2) 在每个方格内放置随机分配到的 (c, alpha) 并写文本 ===
-    #     # 这里假设 self.shuffled_casinos = [(c1, alpha1), (c2, alpha2), ...]
-    #     # 长度 = num_casinos * num_casinos
-    #     # 格子索引 row=i, col=j => index = i * num_casinos + j
-    #     for i in range(self.num_casinos):
-    #         for j in range(self.num_casinos):
-    #             index = i * self.num_casinos + j
-    #             c, alpha = self.shuffled_casinos[index]
-
-    #             x_min = j * step_size
-    #             y_min = i * step_size
-
-    #             # 把 (c, alpha) 的数值显示到格子中央
-    #             center_x = x_min + 0.5 * step_size
-    #             center_y = y_min + 0.5 * step_size
-    #             ax.text(center_x, center_y,
-    #                     f"{c:.2f}\n{alpha:.2f}",
-    #                     ha='center', va='center',
-    #                     fontsize=8, color='black')
-
-    #     # === 3) 绘制智能体: 找到每个智能体所在的 (c, alpha)，再查字典获取该方格位置 ===
-    #     for agent_name, agent_obj in self.agents.items():
-    #         c, alpha = agent_obj.current_casino
-
-    #         # 用一个字典 casino_to_rc 来找 row, col
-    #         # 如果 c, alpha 是浮点，可能需要处理精度
-    #         (row, col) = (c, alpha)  # 或者 (round(c,3),round(alpha,3))
-
-    #         # 计算该方格左下角
-    #         x_min = col * step_size
-    #         y_min = row * step_size
-
-    #         # 在方格内随机抖动
-    #         jitter_x = np.random.uniform(x_min + 0.1 * step_size, x_min + 0.9 * step_size)
-    #         jitter_y = np.random.uniform(y_min + 0.1 * step_size, y_min + 0.9 * step_size)
-
-    #         # 根据合作/背叛着色
-    #         color = 'blue' if agent_obj.is_cooperator else 'red'
-    #         ax.scatter(jitter_x, jitter_y, c=color, s=40, edgecolors='white')
-
-    #     # === 4) 设置外观，如轴范围、网格线等 ===
-    #     # 与原先类似
-    #     ax.set_xlim(0, 1)
-    #     ax.set_ylim(0, 1)
-    #     ax.set_xticks(grid_lines, minor=True)
-    #     ax.set_yticks(grid_lines, minor=True)
-    #     ax.grid(True, which='minor', linestyle="--", alpha=0.5)
-
-    #     ax.spines['top'].set_visible(False)
-    #     ax.spines['right'].set_visible(False)
-    #     ax.spines['bottom'].set_position(('data', 0))
-    #     ax.spines['left'].set_position(('data', 0))
-
-    #     legend_elements = [
-    #         Line2D([0], [0], marker='o', color='w', markerfacecolor='blue', markersize=8, label='Cooperator'),
-    #         Line2D([0], [0], marker='o', color='w', markerfacecolor='red',  markersize=8, label='Defector')
-    #     ]
-    #     ax.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, 1.1), ncol=2, fontsize=12)
-    #     ax.set_title("Shuffled Grid Layout")
-
-    #     # === 5) 保存到文件而不显示 ===
-    #     file_path = os.path.join(self.run_dir, f"{t}.png")
-    #     plt.tight_layout()
-    #     plt.savefig(file_path)
-    #     plt.close(fig)
-    #     # print(f"Saved figure: {file_path}")

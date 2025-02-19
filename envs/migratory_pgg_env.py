@@ -173,15 +173,9 @@ class MigratoryPGGEnv(ParallelEnv):
         """代理调用 Agent 实例的合法动作"""
         return self.agents[agent_name].valid_moves(self.step_size)
 
-    # action_space = env.action_space(agent)  # 一直是 Discrete(n)
-    # valid_actions = env.get_valid_actions(agent)  # 取合法动作
 
-    # # 选择动作索引
-    # action_idx = np.random.randint(0, len(valid_actions))
-    # actual_action = valid_actions[action_idx]  # 映射到真实动作
-
-    def reset(self, seed=None):
-        """重置环境到初始状态"""
+    def reset_obs(self, seed=None):
+        """重置环境观测"""
         self.phase = "pre_game"
 
         # 重新初始化时间步计数
@@ -217,13 +211,7 @@ class MigratoryPGGEnv(ParallelEnv):
         else:
             for agent_name, move_action in actions.items():
                 agent = self.agents[agent_name]
-                # old_position = agent.current_casino  # 记录移动前的位置
-
                 self.move_agents(agent_name, move_action)  # 执行移动
-
-                # new_position = agent.current_casino  # 移动后的新位置
-                # print(f"{agent_name} 从 {old_position} 移动到 {new_position}，执行动作 {move_action}")
-
 
             # 重新进入博弈前阶段
             self.phase = "pre_game"
@@ -316,6 +304,13 @@ class MigratoryPGGEnv(ParallelEnv):
     def coopration_rate(self):
         """计算合作率"""
         return sum(1 for agent in self.agents.values() if agent.is_cooperator) / len(self.agents)
+    
+    def each_coopration_rate(self, casino):
+        """计算每个赌场的合作率"""
+        n = self.get_agent_count(casino)
+        n_C = self.get_cooperator_count(casino)
+        return n_C / n if n != 0 else 0.0  # 赌场为空时返回 0.0
+
 
     def render(self, t):
         """

@@ -8,7 +8,7 @@ from utils.replaybuffer import ReplayBuffer
 
 class DQNPolicy:
     def __init__(self,  action_spaces, 
-                lr=1e-3, gamma=0.99, buffer_size=10000, batch_size=32, device="cpu"):
+                lr=1e-3, gamma=0.99, buffer_size=10000, batch_size=16, device="cpu"):
         self.device = device
         self.action_spaces = action_spaces  # 存储不同阶段的动作空间
         self.gamma = gamma
@@ -73,17 +73,28 @@ class DQNPolicy:
             self.buffer_m.add(state, action, reward, next_state, done)
 
     def train(self, phase="game", valid_moves=None):
+        """
+        训练 Q 网络：
+        - phase="game" 训练博弈策略 Q_G
+        - phase="move" 训练移动策略 Q_M
+        """
         buffer = self.buffer_g if phase == "game" else self.buffer_m
         q_net = self.q_g if phase == "game" else self.q_m
         target_q_net = self.target_q_g if phase == "game" else self.target_q_m
         optimizer = self.optimizer_g if phase == "game" else self.optimizer_m
 
-        if len(buffer) < self.batch_size:
+        experience_threshold = 1000  # 经验池至少存 5000 条数据后才开始训练
+
+        # 只有当经验池大于阈值时，才进行训练
+        if len(buffer) < experience_threshold:
             return None
+
+        if len(buffer) < self.batch_size:
+            return None  # 如果经验池不够一个 batch，也不训练
 
         states, actions, rewards, next_states, dones = buffer.sample()
 
-
+        # 计算当前 Q 值
         q_values = q_net(states).gather(1, actions.unsqueeze(1)).squeeze()
 
         with torch.no_grad():
@@ -92,14 +103,19 @@ class DQNPolicy:
                 next_q_values = next_q_values[:, valid_moves]
             max_next_q = next_q_values.max(dim=1)[0]
 
+        # 计算 Q-learning 目标值
         q_targets = rewards + (1 - dones) * self.gamma * max_next_q
 
+        # 计算损失
         loss = F.smooth_l1_loss(q_values, q_targets)
+
+        # 反向传播
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         return loss.item()
+
 
 
 
