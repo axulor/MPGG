@@ -4,7 +4,7 @@ import random
 import os
 import matplotlib.pyplot as plt
 from collections import deque  # 引入双端队列
-from envs.migratory_pgg_env import MigratoryPGGEnv
+from envs.migratory_pgg_env_v0 import MigratoryPGGEnv
 from torch.utils.tensorboard import SummaryWriter  # TensorBoard 记录数据
 
 # 设备选择

@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from envs.migratory_pgg_env import MigratoryPGGEnv
+from envs.migratory_pgg_env_v0 import MigratoryPGGEnv
 from algorithms.DQNPolicy import DQNPolicy
 from utils.replaybuffer import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter

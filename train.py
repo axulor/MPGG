@@ -1,129 +1,162 @@
 import torch
 torch.cuda.empty_cache()  # 释放 GPU 缓存
-
+import seaborn as sns
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import random
 import os
-import matplotlib.pyplot as plt
-from envs.migratory_pgg_env import MigratoryPGGEnv
-from collections import deque  # 引入双端队列
+from envs.migratory_pgg_env_v3 import MigratoryPGGEnv  # 修改后的环境文件，观测为 (row, col)
 from tqdm import tqdm
-from torch.utils.tensorboard import SummaryWriter  # TensorBoard 记录数据
+from torch.utils.tensorboard import SummaryWriter
 
 # 设备选择
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # ———————————————————— 训练参数 ———————————————————————— #
-T = 100000  # 步数
-learning_rate = 0.1  # 学习率 α
-gamma = 0.1  # 折扣因子 γ
-epsilon = 1.0  # 初始探索率
-epsilon_min = 0.05  # 最小探索率
-epsilon_decay = 0.995  # 探索率衰减
-reward_window = 1  # 移动奖励计算的过去窗口大小
-
+TOTAL_STEPS = 200000            # 总步数（环境步数）
+update_interval = 1             # 每执行 k 步动作后更新一次 Q 表（可设置为 1 表示一步更新）
+num_updates = TOTAL_STEPS // update_interval  # 更新次数
+learning_rate = 0.1             # 学习率 α
+gamma = 0.1                     # 折扣因子 γ
+epsilon = 1.0                   # 初始探索率
+epsilon_min = 0.00000001              # 最小探索率
+epsilon_decay = 0.999995          # 探索率衰减
+seed = 42                       # 全局随机种子
 
 # ———————————————————— 初始化 ———————————————————————— #
-writer = SummaryWriter() # 初始化 TensorBoard
-env = MigratoryPGGEnv() # 初始化环境
-past_rewards = {agent: deque(maxlen=reward_window) for agent in env.agent_names} # 记录过去 n 轮的博弈奖励，双端队列
-Q_G = {}  # 存储博弈 Q 值
-Q_M = {}  # 存储移动 Q 值
-for casino in env.casinos:
-    Q_G[casino] = torch.zeros((2,), dtype=torch.float32, device=device)  # 2 个博弈动作（合作/背叛）
-    Q_M[casino] = torch.zeros((5,), dtype=torch.float32, device=device)  # 5 个移动动作（上下左右不动）
+writer = SummaryWriter()        # TensorBoard 记录
 
-cooperation_rates = []  # 记录合作率
-avg_past_rewards = {agent: 0 for agent in env.agent_names}  # 记录过去 n 轮的平均奖励
-pbar = tqdm(range(T), desc="Training Progress", ncols=100) # 进度条
+# 定义8×8区域环境的梯度方案参数：
+grid_division = 8
+custom_grid_params = {}
 
+# 设置参数取值
+r_min = 2.0   # 最左侧的增益因子最小值
+r_max = 3.5   # 最右侧的增益因子最大值
+c_min = 0.8   # 底部的固定成本最小值
+c_max = 1.2   # 顶部的固定成本最大值
+
+# 遍历每个网格单元，(i, j) 其中 i 代表行，j 代表列
+for i in range(grid_division):
+    for j in range(grid_division):
+        # 固定成本：从下到上线性增加
+        # 注意：这里假定 i=0 为顶部，i=7 为底部，所以用 (grid_division-1-i) 来实现从下到上增加
+        cost = c_min + ((grid_division - 1 - i) / (grid_division - 1)) * (c_max - c_min)
+        # 增益因子：从左到右线性增加
+        r = r_min + (j / (grid_division - 1)) * (r_max - r_min)
+        custom_grid_params[(i, j)] = (cost, r)
+
+# 实例化环境时传入自定义的区域参数
+env = MigratoryPGGEnv(grid_division=8, custom_grid_params=custom_grid_params, seed=seed)
+obs, _ = env.reset(seed=seed)
+
+# 初始化每个智能体的 Q 表：形状为 (network_size, network_size, 2, 5)
+Q_tables = {
+    agent: np.zeros((env.network_size, env.network_size, 2, 5))
+    for agent in env.agent_names
+}
+
+# 初始化全局和区域合作率记录
+# 注意：使用 env.grid_params 的 key 来表示各个网格区域
+cooperation_history = {grid: [] for grid in env.grid_params.keys()}
+
+# 如果采用批量更新，定义一个 transition 缓冲区，存储 (agent, s, action, reward, s')
+transition_buffer = []
 
 # ———————————————————— 训练循环 ———————————————————————— #
-for t in pbar:
-    obs, _ = env.reset_obs() # 重置观测
-    actions_G = {}
-    actions_M = {}
-
-    # 博弈阶段（仅执行，不更新 Q-learning）
+tbar = tqdm(range(1, TOTAL_STEPS + 1), desc="Training")
+for step in tbar:
+    actions = {}
+    current_states = {}  # 记录每个智能体的当前状态，用于后续 Q 表更新
+    # 为每个智能体选择动作（epsilon 贪婪）
     for agent in env.agent_names:
-        casino_state = obs[agent][:2]  # (c, alpha)
-        if random.uniform(0, 1) < epsilon:
-            actions_G[agent] = random.choice([0, 1])  # ε-greedy 探索
+        s = obs[agent]  # 当前状态，形式为 (row, col)
+        current_states[agent] = s
+        # 从 Q 表中获得当前状态所有动作的 Q 值
+        q_vals = Q_tables[agent][s[0], s[1]]
+        if random.random() < epsilon:
+            # 随机选择动作：game_action 取 0/1, move_action 取 0~4
+            game_action = random.randint(0, 1)
+            move_action = random.randint(0, 4)
         else:
-            actions_G[agent] = torch.argmax(Q_G[casino_state]).item()
+            # 贪婪选择最大 Q 值对应的动作
+            idx = np.unravel_index(np.argmax(q_vals, axis=None), q_vals.shape)
+            game_action, move_action = idx
+        actions[agent] = (game_action, move_action)
 
-    # 进行博弈，获取奖励
-    next_obs, rewards, _, _, _ = env.step(actions_G)  # 赌场状态不变
+    # 执行动作，获得下一个状态和奖励
+    new_obs, rewards, _, _, _ = env.step(actions)
 
-    # 记录博弈历史奖励
+    # 对每个智能体存储 (s, action, reward, s') 转移并根据 update_interval 进行 Q 表更新
     for agent in env.agent_names:
-        past_rewards[agent].append(rewards[agent])
-
-    # **移动阶段**
-    for agent in env.agent_names:
-        casino_state = next_obs[agent][:2]
-        if random.uniform(0, 1) < epsilon:
-            actions_M[agent] = random.choice([0, 1, 2, 3, 4])  # ε-greedy 探索
+        s = current_states[agent]
+        a = actions[agent]
+        r = rewards[agent]
+        s_next = new_obs[agent]
+        # 如果 update_interval 为 1，则直接更新 Q 表；否则先存入缓冲区
+        if update_interval == 1:
+            old_val = Q_tables[agent][s[0], s[1], a[0], a[1]]
+            next_max = np.max(Q_tables[agent][s_next[0], s_next[1]])
+            Q_tables[agent][s[0], s[1], a[0], a[1]] = old_val + learning_rate * (r + gamma * next_max - old_val)
         else:
-            actions_M[agent] = torch.argmax(Q_M[casino_state]).item()
+            transition_buffer.append((agent, s, a, r, s_next))
 
-    # 执行移动
-    next_next_obs, _, _, _, _ = env.step(actions_M)  # 赌场状态 **此时改变**
+    # 如果达到 update_interval，则对缓冲区中的所有转移进行批量更新
+    if update_interval > 1 and step % update_interval == 0:
+        for (agent, s, a, r, s_next) in transition_buffer:
+            old_val = Q_tables[agent][s[0], s[1], a[0], a[1]]
+            next_max = np.max(Q_tables[agent][s_next[0], s_next[1]])
+            Q_tables[agent][s[0], s[1], a[0], a[1]] = old_val + learning_rate * (r + gamma * next_max - old_val)
+        transition_buffer = []  # 清空缓冲区
 
-    # **延迟更新 博弈 Q-learning**
-    for agent in env.agent_names:
-        casino_state = obs[agent][:2]  # 仍然是初始状态
-        action = actions_G[agent]
-        reward = rewards[agent]
-        next_casino_state = next_next_obs[agent][:2]  # **使用移动后的赌场状态**
+    # 更新 epsilon 探索率（衰减但不低于 epsilon_min）
+    epsilon = max(epsilon_min, epsilon * epsilon_decay)
 
-        # 更新博弈 Q-learning
-        Q_G[casino_state][action] += learning_rate * (
-            reward + gamma * torch.max(Q_G[next_casino_state]) - Q_G[casino_state][action]
-        )
+    # 更新 TensorBoard 指标
+    global_coop = env.get_global_cooperation_rate()  # 全局合作率
+    avg_reward = np.mean(list(rewards.values()))       # 平均奖励
+    writer.add_scalar("Global Cooperation Rate", global_coop, step)
+    writer.add_scalar("Average Reward", avg_reward, step)
+    writer.add_scalar("Epsilon", epsilon, step)
 
-    # **更新移动 Q-learning**
-    for agent in env.agent_names:
-        avg_past_reward = np.mean(past_rewards[agent])
+    # 更新每个网格的合作率记录
+    grid_coop_rates = env.get_grid_cooperation_rates()
+    for grid, coop_rate in grid_coop_rates.items():
+        cooperation_history[grid].append(coop_rate if coop_rate is not None else 0)
 
-        casino_state = next_obs[agent][:2]  # **博弈后的赌场**
-        action = actions_M[agent]
-        next_casino_state = next_next_obs[agent][:2]  # **移动后的赌场**
+    # 更新观测
+    obs = new_obs
 
-        Q_M[casino_state][action] += learning_rate * (
-            avg_past_reward + gamma * torch.max(Q_M[next_casino_state]) - Q_M[casino_state][action]
-        )
+    # 更新进度条显示
+    tbar.set_postfix({
+        "Global Coop": f"{global_coop:.3f}",
+        "Avg Reward": f"{avg_reward:.3f}",
+        "Epsilon": f"{epsilon:.3f}"
+    })
 
-    # **更新探索率**
-    if epsilon > epsilon_min:
-        epsilon *= epsilon_decay
+    # 每隔 100 步打印一次
+    if step % 100 == 0:
+        print(f"Step {step}: Global Coop = {global_coop:.3f}, Avg Reward = {avg_reward:.3f}, Epsilon = {epsilon:.3f}")
 
-    coop_rate = env.coopration_rate()
-    pbar.set_postfix({
-    "T": t,
-    "CoopRate": f"{coop_rate:.4f}",
-    "Epsilon": f"{epsilon:.4f}"})
-
-    # **记录训练数据到 TensorBoard**
-    if t % 100 == 0:
-        writer.add_scalar("Cooperation Rate", coop_rate, t)
-        writer.add_scalar("Epsilon", epsilon, t)
-        print(f"[Step {t}] Cooperation Rate: {coop_rate:.4f}, Epsilon: {epsilon:.4f}")
-
-        for casino in env.casinos:
-            casino_coopration_rate = env.each_coopration_rate(casino)
-            writer.add_scalar(f"Cooperation Rate/{casino}", casino_coopration_rate, t)
-            writer.add_scalar(f"Q_G_Defect/{casino}", Q_G[casino][0].item(), t)
-            writer.add_scalar(f"Q_G_Coop/{casino}", Q_G[casino][1].item(), t)
-
-            writer.add_scalar(f"Q_M_Up/{casino}", Q_M[casino][0].item(), t)
-            writer.add_scalar(f"Q_M_Down/{casino}", Q_M[casino][1].item(), t)
-            writer.add_scalar(f"Q_M_Left/{casino}", Q_M[casino][2].item(), t)
-            writer.add_scalar(f"Q_M_Right/{casino}", Q_M[casino][3].item(), t)
-            writer.add_scalar(f"Q_M_Stay/{casino}", Q_M[casino][4].item(), t)
-
-        env.render(t)
-
-# 关闭 TensorBoard
 writer.close()
+
+# ———————————————————— 训练结束后的可视化 ———————————————————————— #
+# 计算每个网格的平均合作率（沿时间步取平均）
+grid_avg_coop = {}
+for grid, coop_list in cooperation_history.items():
+    grid_avg_coop[grid] = np.mean(coop_list) if len(coop_list) > 0 else None
+
+# 构造热力图数据：二维数组，行列分别为 grid_division
+heatmap_data = np.zeros((env.grid_division, env.grid_division))
+for (grid_row, grid_col), coop_rate in grid_avg_coop.items():
+    heatmap_data[grid_row, grid_col] = coop_rate if coop_rate is not None else np.nan
+
+# 绘制热力图
+plt.figure(figsize=(8, 6))
+sns.heatmap(heatmap_data, annot=True, cmap="YlGnBu", cbar_kws={'label': 'Average Cooperation Rate'})
+plt.title("Heatmap of Average Cooperation Rate per Grid")
+plt.xlabel("Grid Column")
+plt.ylabel("Grid Row")
+plt.show()
