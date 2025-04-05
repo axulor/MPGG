@@ -25,6 +25,8 @@ class MigratoryPGGEnv(ParallelEnv):
         self.timestep = 0  # 时间步计数
         self.move_steps = move_steps  # 新增移动步长属性
         self.seed = seed  # 全局随机种子
+        self.run_dir = None
+
 
         # 设置全局随机种子
         if self.seed is not None:
@@ -83,10 +85,52 @@ class MigratoryPGGEnv(ParallelEnv):
             self.agents[agent_id] = Agent(agent_id)
 
     def assign_agents_to_nodes(self):
-        node_positions = list(self.nodes.keys())
-        random.shuffle(node_positions)
-        for agent_id, node in zip(self.agents, node_positions):
-            self.agents[agent_id].set_current_node(node)
+        # 1. 将所有节点按照所属网格分组
+        # 注意：网格索引计算：grid_row = row // self.grid_size, grid_col = col // self.grid_size
+        grid_nodes = {}  # 键为 (grid_row, grid_col)，值为该网格中所有节点（row, col）的列表
+        for (row, col) in self.nodes.keys():
+            grid = (row // self.grid_size, col // self.grid_size)
+            grid_nodes.setdefault(grid, []).append((row, col))
+        
+        # 随机打乱每个网格内的节点顺序
+        for grid in grid_nodes:
+            random.shuffle(grid_nodes[grid])
+        
+        # 2. 对智能体进行分组分配
+        agents_list = list(self.agents.keys())
+        random.shuffle(agents_list)  # 随机化智能体顺序
+        
+        num_grids = len(self.grid_params)  # 通常 grid_division*grid_division，例如 64
+        min_agents_per_grid = 2
+        total_agents = len(agents_list)     # 例如 150
+        remaining_agents = total_agents - (min_agents_per_grid * num_grids)  # 150 - 128 = 22
+        
+        # 先为每个网格分配最少两个智能体
+        grid_assignments = {grid: [] for grid in self.grid_params.keys()}
+        for grid in grid_assignments:
+            # 如果网格内节点足够（每个网格一般会有 self.grid_size*self.grid_size 个节点）
+            for _ in range(min_agents_per_grid):
+                if grid_nodes[grid]:
+                    node = grid_nodes[grid].pop()  # 从该网格随机取一个节点
+                    agent = agents_list.pop(0)
+                    grid_assignments[grid].append((agent, node))
+        
+        # 3. 将剩余的智能体随机分布到各个网格中
+        grids = list(grid_assignments.keys())
+        while agents_list:
+            grid = random.choice(grids)
+            # 从该网格中获取一个节点（如果该网格节点用完了，再随机选择其他网格）
+            if not grid_nodes[grid]:
+                continue
+            node = grid_nodes[grid].pop()
+            agent = agents_list.pop(0)
+            grid_assignments[grid].append((agent, node))
+        
+        # 4. 更新每个智能体的当前位置
+        for assignments in grid_assignments.values():
+            for agent, node in assignments:
+                self.agents[agent].set_current_node(node)
+
 
     def get_observation(self, agent_id):
         """返回智能体的观测信息：当前节点位置 (row, col)"""

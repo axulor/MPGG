@@ -9,19 +9,20 @@ import os
 from envs.migratory_pgg_env_v3 import MigratoryPGGEnv  # 修改后的环境文件，观测为 (row, col)
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from envs.visualizer import PygameVisualizer  # 导入可视化器
 
 # 设备选择
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # ———————————————————— 训练参数 ———————————————————————— #
-TOTAL_STEPS = 200000            # 总步数（环境步数）
+TOTAL_STEPS = 1000000            # 总步数（环境步数）
 update_interval = 1             # 每执行 k 步动作后更新一次 Q 表（可设置为 1 表示一步更新）
 num_updates = TOTAL_STEPS // update_interval  # 更新次数
 learning_rate = 0.1             # 学习率 α
-gamma = 0.1                     # 折扣因子 γ
+gamma = 0.1                   # 折扣因子 γ
 epsilon = 1.0                   # 初始探索率
-epsilon_min = 0.00000001              # 最小探索率
+epsilon_min = 1e-8              # 最小探索率
 epsilon_decay = 0.999995          # 探索率衰减
 seed = 42                       # 全局随机种子
 
@@ -34,9 +35,9 @@ custom_grid_params = {}
 
 # 设置参数取值
 r_min = 2.0   # 最左侧的增益因子最小值
-r_max = 3.5   # 最右侧的增益因子最大值
+r_max = 5.0   # 最右侧的增益因子最大值
 c_min = 0.8   # 底部的固定成本最小值
-c_max = 1.2   # 顶部的固定成本最大值
+c_max = 1.6   # 顶部的固定成本最大值
 
 # 遍历每个网格单元，(i, j) 其中 i 代表行，j 代表列
 for i in range(grid_division):
@@ -52,6 +53,12 @@ for i in range(grid_division):
 env = MigratoryPGGEnv(grid_division=8, custom_grid_params=custom_grid_params, seed=seed)
 obs, _ = env.reset(seed=seed)
 
+# 实例化可视化器对象，用于生成快照
+visualizer = PygameVisualizer(env)
+
+# 在初始时刻（t=0）生成一次快照
+visualizer.render(t=0)
+
 # 初始化每个智能体的 Q 表：形状为 (network_size, network_size, 2, 5)
 Q_tables = {
     agent: np.zeros((env.network_size, env.network_size, 2, 5))
@@ -64,6 +71,9 @@ cooperation_history = {grid: [] for grid in env.grid_params.keys()}
 
 # 如果采用批量更新，定义一个 transition 缓冲区，存储 (agent, s, action, reward, s')
 transition_buffer = []
+
+# 预定生成快照的时间步（可根据需要调整）
+snapshot_steps = {100, 1000, 10000, 100000, 200000, 300000, 400000, 500000} | set(range(510000, 1000001, 10000))
 
 # ———————————————————— 训练循环 ———————————————————————— #
 tbar = tqdm(range(1, TOTAL_STEPS + 1), desc="Training")
@@ -89,27 +99,16 @@ for step in tbar:
     # 执行动作，获得下一个状态和奖励
     new_obs, rewards, _, _, _ = env.step(actions)
 
-    # 对每个智能体存储 (s, action, reward, s') 转移并根据 update_interval 进行 Q 表更新
+    # 对每个智能体存储 (s, action, reward, s') 转移并更新 Q 表
     for agent in env.agent_names:
         s = current_states[agent]
         a = actions[agent]
         r = rewards[agent]
         s_next = new_obs[agent]
-        # 如果 update_interval 为 1，则直接更新 Q 表；否则先存入缓冲区
-        if update_interval == 1:
-            old_val = Q_tables[agent][s[0], s[1], a[0], a[1]]
-            next_max = np.max(Q_tables[agent][s_next[0], s_next[1]])
-            Q_tables[agent][s[0], s[1], a[0], a[1]] = old_val + learning_rate * (r + gamma * next_max - old_val)
-        else:
-            transition_buffer.append((agent, s, a, r, s_next))
-
-    # 如果达到 update_interval，则对缓冲区中的所有转移进行批量更新
-    if update_interval > 1 and step % update_interval == 0:
-        for (agent, s, a, r, s_next) in transition_buffer:
-            old_val = Q_tables[agent][s[0], s[1], a[0], a[1]]
-            next_max = np.max(Q_tables[agent][s_next[0], s_next[1]])
-            Q_tables[agent][s[0], s[1], a[0], a[1]] = old_val + learning_rate * (r + gamma * next_max - old_val)
-        transition_buffer = []  # 清空缓冲区
+        # 直接更新 Q 表（update_interval == 1）
+        old_val = Q_tables[agent][s[0], s[1], a[0], a[1]]
+        next_max = np.max(Q_tables[agent][s_next[0], s_next[1]])
+        Q_tables[agent][s[0], s[1], a[0], a[1]] = old_val + learning_rate * (r + gamma * next_max - old_val)
 
     # 更新 epsilon 探索率（衰减但不低于 epsilon_min）
     epsilon = max(epsilon_min, epsilon * epsilon_decay)
@@ -136,27 +135,12 @@ for step in tbar:
         "Epsilon": f"{epsilon:.3f}"
     })
 
-    # 每隔 100 步打印一次
+    # 每隔 100 步打印一次指标
     if step % 100 == 0:
         print(f"Step {step}: Global Coop = {global_coop:.3f}, Avg Reward = {avg_reward:.3f}, Epsilon = {epsilon:.3f}")
+    
+    # 在指定快照时刻生成环境快照
+    if step in snapshot_steps:
+        visualizer.render(t=step)
 
 writer.close()
-
-# ———————————————————— 训练结束后的可视化 ———————————————————————— #
-# 计算每个网格的平均合作率（沿时间步取平均）
-grid_avg_coop = {}
-for grid, coop_list in cooperation_history.items():
-    grid_avg_coop[grid] = np.mean(coop_list) if len(coop_list) > 0 else None
-
-# 构造热力图数据：二维数组，行列分别为 grid_division
-heatmap_data = np.zeros((env.grid_division, env.grid_division))
-for (grid_row, grid_col), coop_rate in grid_avg_coop.items():
-    heatmap_data[grid_row, grid_col] = coop_rate if coop_rate is not None else np.nan
-
-# 绘制热力图
-plt.figure(figsize=(8, 6))
-sns.heatmap(heatmap_data, annot=True, cmap="YlGnBu", cbar_kws={'label': 'Average Cooperation Rate'})
-plt.title("Heatmap of Average Cooperation Rate per Grid")
-plt.xlabel("Grid Column")
-plt.ylabel("Grid Row")
-plt.show()
