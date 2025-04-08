@@ -45,7 +45,11 @@ class MigratoryPGGEnv(ParallelEnv):
         self.visualize = visualize
 
         # 为每个智能体生成唯一标识，如 "agent_0", "agent_1", ..., "agent_N-1"
-        self.agents = [f"agent_{i}" for i in range(self.N)]
+        self.possible_agents = [f"agent_{i}" for i in range(self.N)]
+        self.agents = list(self.possible_agents)  # 拷贝一份作为当前存活列表
+
+        # self.num_agents = len(self.agents)
+        # self.max_num_agents = self.num_agents
 
         # 设置随机种子，保证实验结果可重复
         self._seed(seed)
@@ -82,30 +86,20 @@ class MigratoryPGGEnv(ParallelEnv):
         - 定义为二维向量，范围在 -1.0 到 1.0，表示智能体的移动方向和大小（会经过归一化处理）
         """
         self.observation_spaces = {
-            agent: spaces.Dict(
-                {
-                    "self": spaces.Dict(
-                        {
-                            "position": spaces.Box(low=0, high=self.size, shape=(2,), dtype=np.float32),
-                            "velocity": spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32),
-                            "strategy": spaces.Discrete(2),  # 0 表示背叛，1 表示合作
-                            "last_payoff": spaces.Box(low=-np.inf, high=np.inf, shape=(), dtype=np.float32),
-                        }
-                    ),
-                    "neighbors": spaces.Sequence(
-                        spaces.Dict(
-                            {
-                                "position": spaces.Box(low=0, high=self.size, shape=(2,), dtype=np.float32),
-                                "velocity": spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32),
-                                "strategy": spaces.Discrete(2),
-                                "last_payoff": spaces.Box(low=-np.inf, high=np.inf, shape=(), dtype=np.float32),
-                            }
-                        )
-                    ),
-                }
-            )
-            for agent in self.agents
+            agent: spaces.Dict({
+                "self": spaces.Dict({
+                    "strategy": spaces.Discrete(2),
+                    "last_payoff": spaces.Box(low=-np.inf, high=np.inf, shape=(), dtype=np.float32),
+                }),
+                "neighbors": spaces.Sequence(spaces.Dict({
+                    "relative_position": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
+                    "distance": spaces.Box(low=0.0, high=self.radius, shape=(), dtype=np.float32),
+                    "strategy": spaces.Discrete(2),
+                    "last_payoff": spaces.Box(low=-np.inf, high=np.inf, shape=(), dtype=np.float32)
+                }))
+            }) for agent in self.agents
         }
+
 
         self.action_spaces = {
             agent: spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
@@ -139,6 +133,12 @@ class MigratoryPGGEnv(ParallelEnv):
         self.strategy = {}
         self.last_payoff = {}
 
+        self.agents = list(self.possible_agents)
+        self.dones = {agent: False for agent in self.agents}
+        self.infos = {agent: {} for agent in self.agents}
+
+
+
         for agent in self.agents:
             self.pos[agent] = self.np_random.random(2) * self.size
             theta = self.np_random.random() * 2 * np.pi
@@ -146,14 +146,16 @@ class MigratoryPGGEnv(ParallelEnv):
             self.last_payoff[agent] = 0.0
 
         # 严格控制一半智能体合作，一半背叛
-        shuffled_agents = self.agents.copy()
+        shuffled_agents = list(self.agents)  # 转换为 list 再 shuffle
         self.np_random.shuffle(shuffled_agents)
+
+        
         half = (self.N + 1) // 2
         cooperators = set(shuffled_agents[:half])
         for agent in self.agents:
             self.strategy[agent] = 1 if agent in cooperators else 0
 
-        return self._compute_observations()
+        return self._compute_observations(), self.infos
 
 
     def step(self, actions: Dict[str, np.ndarray]):
@@ -189,7 +191,7 @@ class MigratoryPGGEnv(ParallelEnv):
         for agent, move in actions.items():
             # 对动作向量进行归一化（防止除以0，加上极小值1e-8）
             move = move / (np.linalg.norm(move) + 1e-8)
-            # 更新速度（方向保持，幅度为 speed）
+            # 更新速度方向，幅度为 speed
             self.vel[agent] = move * self.speed
             # 更新位置，并通过取模运算实现周期性边界条件
             self.pos[agent] = (self.pos[agent] + self.vel[agent]) % self.size
@@ -241,6 +243,12 @@ class MigratoryPGGEnv(ParallelEnv):
         infos = {agent: {} for agent in self.agents}
 
         # 返回观测、收益、终止标志、截断标志和附加信息
+
+        # 更新活跃的智能体列表（PettingZoo 强制要求）
+        self.agents = [
+            agent for agent in self.possible_agents
+            if not terminations[agent] and not truncated[agent]]
+
         return obs, all_payoffs, terminations, truncated, infos
     
     def _get_neighbors(self, agent):
@@ -284,28 +292,55 @@ class MigratoryPGGEnv(ParallelEnv):
         """
         obs = {}
         for agent in self.agents:
-            # 获取当前智能体的邻居列表
+            agent_pos = self.pos[agent]
             neighbors = self._get_neighbors(agent)
-            # 对每个邻居收集信息
-            neighbor_data = [
-                {
-                    "position": self.pos[n].astype(np.float32),
-                    "velocity": self.vel[n].astype(np.float32),
+            
+            neighbor_data = []
+            for n in neighbors:
+                delta = self.pos[n] - agent_pos
+                delta = (delta + self.size / 2) % self.size - self.size / 2  # 周期性处理
+                dist = np.linalg.norm(delta)
+                relative_position = delta / (dist + 1e-8)  # 单位方向向量
+
+                neighbor_data.append({
+                    "relative_position": relative_position.astype(np.float32),
+                    "distance": float(dist),
                     "strategy": int(self.strategy[n]),
                     "last_payoff": float(self.last_payoff[n]),
-                } for n in neighbors
-            ]
-            # 构造当前智能体的观测信息
+                })
+
             obs[agent] = {
                 "self": {
-                    "position": self.pos[agent].astype(np.float32),
-                    "velocity": self.vel[agent].astype(np.float32),
                     "strategy": int(self.strategy[agent]),
-                    "last_payoff": float(self.last_payoff[agent]),
+                    "last_payoff": float(self.last_payoff[agent])
                 },
                 "neighbors": neighbor_data
             }
+
         return obs
+    
+    def observation_space(self, agent):
+        return self.observation_spaces[agent]
+
+    def action_space(self, agent):
+        return self.action_spaces[agent]
+    
+    def state(self):
+        """
+        返回全局状态，格式为 ndarray，用于 centralized training。
+        拼接所有智能体的策略、收益、位置和速度信息。
+        每个智能体 6 个特征：strategy, payoff, pos(x,y), vel(x,y)
+        """
+        state_list = []
+        for agent in self.agents:
+            s = float(self.strategy[agent])
+            p = float(self.last_payoff[agent])
+            pos = self.pos[agent].astype(np.float32)  # (2,)
+            vel = self.vel[agent].astype(np.float32)  # (2,)
+            state_list.append(np.concatenate([[s, p], pos, vel]))  # shape: (6,)
+        
+        return np.concatenate(state_list, axis=0)  # shape: (N * 6,)
+
 
     def render(self):
         """
@@ -324,6 +359,9 @@ class MigratoryPGGEnv(ParallelEnv):
         """
         if self.visualizer:
             self.visualizer.close()
+
+
+########### 工具函数 ###########
 
     def cooperation_rate(self):
         """
