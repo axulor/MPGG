@@ -1,129 +1,102 @@
 import argparse
-from typing import Any, Dict, List, Tuple
+from typing import  Dict, Tuple
 
 import gymnasium as gym 
 import torch
 import torch.nn as nn
 from torch import Tensor
-from algorithms.utils.util import check # TODO
-from algorithms.utils.util import get_shape_frome_obs_space # TODO
-from algorithms.utils.mlp import MLPBase # TODO
-from algorithms.utils.gnn import GNNBase # TODO
-from algorithms.utils.act import ACTLayer # TODO
-from algorithms.utils.popart import PopArt # TODO 
-
+from algorithms.utils.util import init, check, get_shape_frome_obs_space, minibatchGenerator, init_  
+from algorithms.utils.gnn import GNNBase 
+from algorithms.utils.mlp import MLPBase 
+from algorithms.utils.act import ACTLayer 
 
 
 
 
 class GR_Actor(nn.Module):
+    """
+    Actor network class for MAPPO. Outputs actions given observations.  
+    """
     def __init__(self,
-                args: argparse.Namespace, # TODO
-                 obs_space: gym.Space,
-                 node_obs_space: gym.Space,
-                 edge_obs_space: gym.Space,
-                 action_space: gym.Space,
-                 device = torch.device("cpu"),
-                 )-> None:
+                obs_space: gym.Space, # 观测空间
+                action_space: gym.Space, # 动作空间
+                device = torch.device("cpu"), 
+                )-> None:
+        
         super(GR_Actor, self).__init__()
 
-        self.args = args
-        self.hidden_size = args.hidden_size
+        self.gnn_base = GNNBase() # TODO
+        
+        self.mlp_base = MLPBase() # TODO
+        
+        self.act_layer = ACTLayer() # TODO
+
         self.tpdv = dict(dtype=torch.float32, device=device)
-
-        self._use_orthogonal = args.use_orthogonal # 是否使用正交初始化
-        self._gain = args.gain # 权重初始化的增益
-
-        obs_shape = get_shape_frome_obs_space(obs_space) # TODO
-        node_obs_shape = get_shape_frome_obs_space(node_obs_space)[1] # TODO
-        edge_dim = get_shape_frome_obs_space(edge_obs_space)[0] # TODO
-        gnn_out_dim = self.gnn_base.get_out_dim() # TODO
-
-        self.gnn_base = GNNBase(
-            args,
-            node_obs_shape,
-            edge_dim,
-            args.actor_graph_aggr
-        ) # TODO
-  
-        self.base = MLPBase(
-            args,
-            node_obs_shape,
-            edge_dim,
-            args.actor_graph_aggr,
-        ) # TODO
-
-        self.act = ACTLayer(
-            action_space,
-            self.hidden_size, 
-            self._use_orthogonal, # 是否使用正交初始化 
-            self._gain # 权重初始化的增益 
-        ) # TODO
-
         self.to(device)
 
-    def forward(
+        def forward(
             self,
-            obs: Dict[str, Tensor],
-            node_obs: Dict[str, Tensor],
-            adj: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
-        """
-        Args:
-            obs: observation dictionary
-            node_obs: node observation dictionary
-            adj: adjacency matrix
+            obs,
+            node_obs,
+            adj,
+            agent_id
+        ) -> Tuple[Tensor, Tensor, Tensor]:
+            obs = check(obs).to(**self.tpdv)
+            node_obs = check(node_obs).to(**self.tpdv)
+            adj = check(adj).to(**self.tpdv)
+            agent_id = check(agent_id).to(**self.tpdv).long()
+            
 
-        """
-        obs = check(obs).to(**self.tpdv) # TODO
-        node_obs = check(node_obs).to(**self.tpdv)
-        adj = check(adj).to(**self.tpdv)
-        agent_id = check(agent_id).to(**self.tpdv)
-
-        nbd_features = self.gnn_base(node_obs, adj, agent_id)
-        actor_features = torch.cat([obs, nbd_features], dim=1)
-        actor_features = self.base(actor_features)
-
-        actions, action_log_probs = self.act(actor_features) # TODO
-
-        return (actions, action_log_probs)
     
+            nbd_features = self.gnn_base(node_obs, adj, agent_id) #TODO 提取指定智能体的邻居特征
+            actor_features = torch.cat([obs, nbd_features], dim=1) # 拼接自身+邻居特征
+            actor_features = self.mlp_base(actor_features) # 特征送入神经网络
+            actions, action_log_probs = self.act_layer(actor_features) # 输出动作和动作概率分布
 
-    def evaluate_actions(
-            self,
-            obs: Dict[str, Tensor],
-            node_obs: Dict[str, Tensor],
-            adj: Tensor,
-            agent_id: Tensor,
-            actions: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
-          
-
-          obs = check(obs).to(**self.tpdv)
-          node_obs = check(node_obs).to(**self.tpdv)
-          adj = check(adj).to(**self.tpdv)
-          agent_id = check(agent_id).to(**self.tpdv)
-          actions = check(actions).to(**self.tpdv)
-
-          nbd_features = self.gnn_base(node_obs, adj, agent_id)
-          actor_features = torch.cat([obs, nbd_features], dim=1)
-          actor_features = self.base(actor_features)
-
-          action_log_probs, dist_entropy = self.act.evaluate_actions(
-                actor_features, 
-                actions,
-                ) # TODO
-          
-
-          return (action_log_probs, dist_entropy)
+            return (actions, action_log_probs)
     
 
 
 class GR_Critic(nn.Module):
+    """
+    Critic network class for MAPPO. Outputs value function predictions
+    given centralized input (MAPPO) or local observations (IPPO).
+    args: (argparse.Namespace)
+        Arguments containing relevant model information.
+    cent_obs_space: (gym.Space)
+        (centralized) observation space.
+    node_obs_space: (gym.Space)
+        node observation space.
+    edge_obs_space: (gym.Space)
+        edge observation space.
+    device: (torch.device)
+        Specifies the device to run on (cpu/gpu).
+    """
+    def __init__(
+            self,
+            device = torch.device("cpu"),
+        )-> None:
 
+        super(GR_Critic, self).__init__()
 
+        self.gnn_base = GNNBase() # TODO
+        self.mlp_base = MLPBase() # TODO
+        self.v_out = init_(nn.Linear(self.hidden_size, 1)) # TODO
+        
+        self.tpdv = dict(dtype=torch.float32, device=device)
+        self.to(device)
 
+    def forward(self):
+        
+        cent_obs = check(cent_obs).to(**self.tpdv)
+        node_obs = check(node_obs).to(**self.tpdv)
+        adj = check(adj).to(**self.tpdv)
+        agent_id = check(agent_id).to(**self.tpdv)
 
+        nbd_features = self.gnn_base()
+        
+        critic_features = self.mlp_base(nbd_features)
 
+        values = self.v_out(critic_features)
 
-            return values
+        return values # TODO

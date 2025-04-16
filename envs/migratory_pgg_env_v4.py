@@ -92,7 +92,8 @@ class MigratoryPGGEnv(ParallelEnv):
                     "last_payoff": spaces.Box(low=-np.inf, high=np.inf, shape=(), dtype=np.float32),
                 }),
                 "neighbors": spaces.Sequence(spaces.Dict({
-                    "relative_position": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
+                    # "relative_position": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
+                    "relative_angle": spaces.Box(low=-np.pi, high=np.pi, shape=(), dtype=np.float32),
                     "distance": spaces.Box(low=0.0, high=self.radius, shape=(), dtype=np.float32),
                     "strategy": spaces.Discrete(2),
                     "last_payoff": spaces.Box(low=-np.inf, high=np.inf, shape=(), dtype=np.float32)
@@ -300,10 +301,13 @@ class MigratoryPGGEnv(ParallelEnv):
                 delta = self.pos[n] - agent_pos
                 delta = (delta + self.size / 2) % self.size - self.size / 2  # 周期性处理
                 dist = np.linalg.norm(delta)
-                relative_position = delta / (dist + 1e-8)  # 单位方向向量
+                # relative_position = delta / (dist + 1e-8)  # 单位方向向量
+                angle = np.arctan2(delta[1], delta[0])
+
 
                 neighbor_data.append({
-                    "relative_position": relative_position.astype(np.float32),
+                    # "relative_position": relative_position.astype(np.float32),
+                    "relative_angle": float(angle), 
                     "distance": float(dist),
                     "strategy": int(self.strategy[n]),
                     "last_payoff": float(self.last_payoff[n]),
