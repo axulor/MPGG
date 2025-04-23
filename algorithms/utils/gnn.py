@@ -516,12 +516,9 @@ class GNNBase(nn.Module):
         edge_dim: (int)
             Dimensionality of edge attributes 
     """
-    def __init__(self, 
-                args:argparse.Namespace, 
-                node_obs_shape: Union[List, Tuple],
-                edge_dim:int, 
-                graph_aggr:str):
-        
+    def __init__(self, args:argparse.Namespace, 
+                node_obs_shape:Union[List, Tuple],
+                edge_dim:int, graph_aggr:str):
         super(GNNBase, self).__init__()
 
         self.args = args
@@ -536,9 +533,7 @@ class GNNBase(nn.Module):
         # print("embed_hidden_size", args.embed_hidden_size)
         # print("embed_layer_N", args.embed_layer_N)
         # print("embed_use_ReLU", args.embed_use_ReLU)
-        self.gnn = TransformerConvNet(
-                    input_dim=node_obs_shape, 
-                    edge_dim=edge_dim,
+        self.gnn = TransformerConvNet(input_dim=node_obs_shape, edge_dim=edge_dim,
                     num_embeddings=args.num_embeddings,
                     embedding_size=args.embedding_size,
                     hidden_size=args.gnn_hidden_size,

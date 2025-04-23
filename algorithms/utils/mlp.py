@@ -1,11 +1,10 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
 from .util import init, get_clones
 import argparse
 from typing import List, Tuple, Union, Optional
-
-"""MLP modules."""
-
 
 class MLPLayer(nn.Module):
     def __init__(
@@ -61,14 +60,16 @@ class MLPBase(nn.Module):
         self._layer_N = args.layer_N
         self.hidden_size = args.hidden_size
 
-        # override_obs_dim is only used for graph-based models
         if override_obs_dim is None:
             obs_dim = obs_shape[0]
         else:
             print("Overriding Observation dimension")
             obs_dim = override_obs_dim
 
+        self.obs_dim = obs_dim
+
         if self._use_feature_normalization:
+            print(f"[DEBUG] LayerNorm expects normalized_shape = {obs_dim}")
             self.feature_norm = nn.LayerNorm(obs_dim)
 
         self.mlp = MLPLayer(
@@ -79,10 +80,17 @@ class MLPBase(nn.Module):
             self._use_ReLU,
         )
 
-    def forward(self, x: torch.tensor):
+    def forward(self, x):
+        print(f"[DEBUG] MLP forward input shape = {x.shape}")
         if self._use_feature_normalization:
+            if x.shape[-1] < self.obs_dim:
+                pad_size = self.obs_dim - x.shape[-1]
+                pad = torch.zeros(x.shape[0], pad_size, device=x.device)
+                x = torch.cat([x, pad], dim=-1)
+                print(f"[DEBUG] Padded input to shape: {x.shape}")
+            elif x.shape[-1] > self.obs_dim:
+                x = x[..., :self.obs_dim]
+                print(f"[DEBUG] Truncated input to shape: {x.shape}")
             x = self.feature_norm(x)
 
-        x = self.mlp(x)
-
-        return x
+        return self.mlp(x)

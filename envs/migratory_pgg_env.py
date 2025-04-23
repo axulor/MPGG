@@ -4,7 +4,7 @@ from gymnasium import spaces         # Gymnasium中的空间定义，用于定�
 import numpy as np                   # 数值计算库，主要用于数组和数学运算
 import random                        # Python内置的随机数库
 from typing import Dict, Tuple, Optional  # 类型提示工具，用于标注变量的类型
-from envs.visualizer import PygameVisualizer  # 自定义的可视化模块，用于在pygame中绘制环境
+# from envs.visualizer import PygameVisualizer  # 自定义的可视化模块，用于在pygame中绘制环境
 import os
 from datetime import datetime        # 获取当前时间的模块
 from gymnasium.utils import seeding  # 用于环境随机种子的设置
@@ -12,10 +12,12 @@ from gymnasium.utils import seeding  # 用于环境随机种子的设置
 # 定义一个带有周期边界的公共物品博弈环境类，所有智能体在二维空间中移动，并与邻居进行博弈。
 class MigratoryPGGEnv(ParallelEnv):
     # 定义环境元数据，包括支持的渲染模式和环境名称
-    metadata = {"render_modes": ["human"], "name": "migratory_pgg_v4"}
+    metadata = {"render_modes": ["human"], 
+                "name": "migratory_pgg_v4",
+                "is_parallelizable": True}
 
     def __init__(self, N=20, max_cycles=500, size=100, speed=1.0, radius=10.0,
-                 cost=1.0, r=1.5, beta=0.5, render_mode=None, visualize=False, seed=None):
+                cost=1.0, r=1.0, beta=0.5, render_mode=None, visualize=False, seed=None):
         """
         初始化环境参数
         
@@ -55,8 +57,8 @@ class MigratoryPGGEnv(ParallelEnv):
         self._seed(seed)
         # 初始化每个智能体的动作空间和观测空间
         self._init_spaces()
-        # 如果需要可视化，则创建一个 PygameVisualizer 实例
-        self.visualizer = PygameVisualizer(self.size, self.size) if visualize else None
+        # # 如果需要可视化，则创建一个 PygameVisualizer 实例
+        # self.visualizer = PygameVisualizer(self.size, self.size) if visualize else None
         # 重置环境，初始化所有状态
         self.reset()
 
@@ -73,6 +75,13 @@ class MigratoryPGGEnv(ParallelEnv):
         self.np_random, seed = seeding.np_random(seed)
         random.seed(seed)
         return seed
+    
+    def seed(self, seed=None):
+        """设置环境的随机种子"""
+        if seed is None:
+            np.random.seed(1)
+        else:
+            np.random.seed(seed)
 
     def _init_spaces(self):
         """

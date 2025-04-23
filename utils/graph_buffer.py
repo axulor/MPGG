@@ -4,8 +4,8 @@ import argparse
 import numpy as np
 from numpy import ndarray as arr
 from typing import Optional, Tuple, Generator
-from onpolicy.algorithms.utils.popart import PopArt
-from onpolicy.utils.util import get_shape_from_obs_space, get_shape_from_act_space
+from algorithms.utils.popart import PopArt
+from utils.util import get_shape_from_obs_space, get_shape_from_act_space
 
 
 def _flatten(T, N, x):
@@ -117,7 +117,7 @@ class GraphReplayBuffer(object):
                 num_agents,
                 *agent_id_shape,
             ),
-            dtype=np.int,
+            dtype = int,
         )
         self.share_agent_id = np.zeros(
             (
@@ -126,7 +126,7 @@ class GraphReplayBuffer(object):
                 num_agents,
                 *share_agent_id_shape,
             ),
-            dtype=np.int,
+            dtype = int,
         )
         ####################
 

@@ -6,8 +6,8 @@ import torch
 
 # from torch.utils.tensorboard import SummaryWriter
 from tensorboardX import SummaryWriter  # tensorboardX to work with macos
-from onpolicy.utils.shared_buffer import SharedReplayBuffer
-from onpolicy.utils.graph_buffer import GraphReplayBuffer
+from utils.shared_buffer import SharedReplayBuffer
+from utils.graph_buffer import GraphReplayBuffer
 
 
 def _t2n(x):
@@ -76,11 +76,8 @@ class Runner(object):
                     os.makedirs(self.save_dir)
 
         if self.all_args.env_name == "GraphMPE":
-            from onpolicy.algorithms.graph_mappo import GR_MAPPO as TrainAlgo
-            from onpolicy.algorithms.graph_MAPPOPolicy import GR_MAPPOPolicy as Policy
-        else:
-            from onpolicy.algorithms.mappo import R_MAPPO as TrainAlgo
-            from onpolicy.algorithms.MAPPOPolicy import R_MAPPOPolicy as Policy
+            from algorithms.graph_mappo import GR_MAPPO as TrainAlgo
+            from algorithms.graph_MAPPOPolicy import GR_MAPPOPolicy as Policy
 
         # NOTE change variable input here
         if self.use_centralized_V:

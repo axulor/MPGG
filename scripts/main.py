@@ -1,5 +1,5 @@
-from envs.migratory_pgg_env_v4 import MigratoryPGGEnv
-from policy.rule_based_policy import RuleBasedPolicy
+from envs.migratory_pgg_env import MigratoryPGGEnv
+from algorithms.rule_based_policy import RuleBasedPolicy
 import numpy as np
 import time
 import matplotlib.pyplot as plt  # 导入绘图库

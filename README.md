@@ -1,30 +1,36 @@
 # 项目目录结构
 
 ```
-MPGG/
-├── agents/
-│   ├── __init__.py
-│   └── agent.py
+my_project/
 ├── envs/
-│   ├── __init__.py
-│   └── migratory_pgg_env.py
-├── runner/
-│   ├── __init__.py
-│   └── runner.py
+│   └── migratory_pgg_env_v4.py                         # 自定义环境文件 :contentReference[oaicite:0]{index=0}&#8203;:contentReference[oaicite:1]{index=1}
 ├── algorithms/
-│   ├── __init__.py
-│   ├── dqn.py
-│   ├── ppo.py
-│   ├── a2c.py
-│   └── maddpg.py
+│   ├── graph_actor_critic.py                           # Actor/Critic 网络定义 :contentReference[oaicite:2]{index=2}&#8203;:contentReference[oaicite:3]{index=3}
+│   ├── graph_mappo.py                                  # MAPPO Trainer 类 :contentReference[oaicite:4]{index=4}&#8203;:contentReference[oaicite:5]{index=5}
+│   ├── graph_MAPPOPolicy.py                            # Policy 包装器 :contentReference[oaicite:6]{index=6}&#8203;:contentReference[oaicite:7]{index=7}
+│   └── __init__.py
 ├── utils/
-│   ├── __init__.py
-│   └── util.py
-├── experiments/
-│   └── experiments_1.py
-├── test.py
-├── .gitignore
-└── README.md
+│   ├── util.py              # 参数校验、学习率衰减等通用函数
+│   ├── gnn.py               # GNNBase 与图处理工具
+│   ├── mlp.py               # MLPBase
+│   ├── rnn.py               # RNNLayer
+│   ├── act.py               # ACTLayer
+│   ├── graph_buffer.py      # GraphReplayBuffer
+│   ├── valuenorm.py         # ValueNorm
+│   ├── popart.py            # PopArt 归一化
+│   └── __init__.py
+├── train/                    # 训练脚本入口
+│   ├── train_graph_grmappo.py  # Graph‑MAPPO 的主训练循环
+│   ├── train_graph_grippo.py   # 如果需要 IPPO，可照此结构
+│   └── args.py               # 命令行参数解析或超参管理
+├── configs/
+│   └── default_config.yaml   # YAML 格式的实验超参数
+├── scripts/
+│   └── test_env.py           # 快速检查 env 输出 obs／action 格式
+├── results/                  # 存放模型、日志、TensorBoard 数据
+├── README.md                 # 项目说明、运行示例
+└── requirements.txt          # 依赖列表
+
 ```
 
 

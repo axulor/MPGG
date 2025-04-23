@@ -3,7 +3,7 @@ import numpy as np
 from numpy import ndarray as arr
 from typing import Tuple
 import torch
-from onpolicy.runner.shared.base_runner import Runner
+from runner.base_runner import Runner
 import wandb
 import imageio
 
@@ -131,6 +131,14 @@ class GMPERunner(Runner):
         self.buffer.agent_id[0] = agent_id.copy()
         self.buffer.share_agent_id[0] = share_agent_id.copy()
 
+    def _pad_share_obs(self, obs: np.ndarray) -> np.ndarray:
+        # 自动补齐到 54 维
+        if obs.shape[-1] < 54:
+            pad_width = ((0, 0), (0, 54 - obs.shape[1]))
+            obs = np.pad(obs, pad_width, mode='constant', constant_values=0)
+        return obs
+
+
     @torch.no_grad()
     def collect(self, step: int) -> Tuple[arr, arr, arr, arr, arr, arr]:
         self.trainer.prep_rollout()
@@ -141,7 +149,7 @@ class GMPERunner(Runner):
             rnn_states,
             rnn_states_critic,
         ) = self.trainer.policy.get_actions(
-            np.concatenate(self.buffer.share_obs[step]),
+            self._pad_share_obs(np.concatenate(self.buffer.share_obs[step])),
             np.concatenate(self.buffer.obs[step]),
             np.concatenate(self.buffer.node_obs[step]),
             np.concatenate(self.buffer.adj[step]),

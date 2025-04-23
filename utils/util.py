@@ -1,13 +1,38 @@
-from gymnasium import spaces
 import numpy as np
-import torch
-from typing import Dict, Union
-from torch.nn import functional as F
-from typing import Callable
 import math
-import pickle
-import glob
-import os
+import torch
+from torch import Tensor
+
+
+def check(input) -> Tensor:
+    if type(input) == np.ndarray:
+        return torch.from_numpy(input)
+
+
+def get_grad_norm(it) -> float:
+    sum_grad = 0
+    for x in it:
+        if x.grad is None:
+            continue
+        sum_grad += x.grad.norm() ** 2
+    return math.sqrt(sum_grad)
+
+
+def update_linear_schedule(optimizer, epoch, total_num_epochs, initial_lr):
+    """Decreases the learning rate linearly"""
+    lr = initial_lr - (initial_lr * (epoch / float(total_num_epochs)))
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
+
+def huber_loss(e, d) -> float:
+    a = (abs(e) <= d).float()
+    b = (e > d).float()
+    return a * e**2 / 2 + b * d * (abs(e) - d / 2)
+
+
+def mse_loss(e):
+    return e**2 / 2
 
 
 def get_shape_from_obs_space(obs_space):
@@ -34,270 +59,137 @@ def get_shape_from_act_space(act_space):
     return act_shape
 
 
-def linear_schedule_to_0(initial_value: float) -> Callable[[float], float]:
+def tile_images(img_nhwc):
     """
-    Linear learning rate schedule.
-
-    :param initial_value: Initial learning rate.
-    :return: schedule that computes
-      current learning rate depending on remaining progress
+    Tile N images into one big PxQ image
+    (P,Q) are chosen to be as close as possible, and if N
+    is square, then P=Q.
+    input: img_nhwc, list or array of images, ndim=4 once turned into array
+        n = batch index, h = height, w = width, c = channel
+    returns:
+        bigim_HWc, ndarray with ndim=3
     """
-
-    def func(progress_remaining: float) -> float:
-        """
-        Progress will decrease from 1 (beginning) to 0.
-
-        :param progress_remaining:
-        :return: current learning rate
-        """
-        return progress_remaining * initial_value
-
-    return func
+    img_nhwc = np.asarray(img_nhwc)
+    N, h, w, c = img_nhwc.shape
+    H = int(np.ceil(np.sqrt(N)))
+    W = int(np.ceil(float(N) / H))
+    img_nhwc = np.array(list(img_nhwc) + [img_nhwc[0] * 0 for _ in range(N, H * W)])
+    img_HWhwc = img_nhwc.reshape(H, W, h, w, c)
+    img_HhWwc = img_HWhwc.transpose(0, 2, 1, 3, 4)
+    img_Hh_Ww_c = img_HhWwc.reshape(H * h, W * w, c)
+    return img_Hh_Ww_c
 
 
-def linear_schedule_to_1(initial_value: float) -> Callable[[float], float]:
+
+import numpy as np
+import argparse
+import requests
+import inspect
+import functools
+
+
+def store_args(method):
     """
-    Increase to one learning rate schedule.
-
-    :param initial_value: Initial learning rate.
-    :return: Schedule that computes
-      the current learning rate depending on remaining progress.
+    https://stackoverflow.com/questions/6760536/python-iterating-through-constructors-arguments
+    https://github.com/openai/baselines/blob/master/baselines/her/util.py
+    Stores provided method args as instance attributes.
+    Usage:
+    ------
+    class A:
+        @store_args
+        def __init__(self, a, b, c=3, d=4, e=5):
+            pass
+    a = A(1,2)
+    print(a.a, a.b, a.c, a.d, a.e)
+    >>> 1 2 3 4 5
     """
+    argspec = inspect.getfullargspec(method)
+    defaults = {}
+    if argspec.defaults is not None:
+        defaults = dict(zip(argspec.args[-len(argspec.defaults) :], argspec.defaults))
+    if argspec.kwonlydefaults is not None:
+        defaults.update(argspec.kwonlydefaults)
+    arg_names = argspec.args[1:]
 
-    def func(progress_remaining: float) -> float:
-        """
-        Progress will decrease from 1 (beginning) to 0.
+    @functools.wraps(method)
+    def wrapper(*positional_args, **keyword_args):
+        self = positional_args[0]
+        # Get default arg values
+        args = defaults.copy()
+        # Add provided arg values
+        for name, value in zip(arg_names, positional_args[1:]):
+            args[name] = value
+        args.update(keyword_args)
+        self.__dict__.update(args)
+        return method(*positional_args, **keyword_args)
 
-        :param progress_remaining: Remaining progress, ranging from 1 to 0.
-        :return: Current learning rate.
-        """
-        return (1 - progress_remaining) * (1 - initial_value) + initial_value
-
-    return func
-
-
-
-
-def preprocess_obs(obs: torch.Tensor, observation_space: spaces.Space) -> Union[torch.Tensor, Dict[str, torch.Tensor]]: # 预处理观察
-    if isinstance(observation_space, spaces.Box): # 如果观察空间是Box   
-        return obs.float() # 返回观察
-    if isinstance(observation_space, spaces.MultiDiscrete): # 如果观察空间是MultiDiscrete
-        # Tensor concatenation of one hot encodings of each Categorical sub-space  
-        return torch.cat(
-            [
-                F.one_hot(obs[_].long(), num_classes=dim).float() # 将每个Categorical子空间转换为one-hot编码    
-                for _, dim in enumerate(observation_space.nvec)
-            ],
-            dim=-1,
-        ).view(obs.shape[0], observation_space.nvec[0]) # 展平
-    elif isinstance(observation_space, spaces.Dict): # 如果观察空间是Dict
-        # Do not modify by reference the original observation
-        assert isinstance(obs, Dict), f"Expected dict, got {type(obs)}" # 断言obs是字典
-        preprocessed_obs = {} # 初始化preprocessed_obs
-        for key, _obs in obs.items(): # 遍历obs的每个键值对
-            preprocessed_obs[key] = preprocess_obs(_obs, observation_space[key]) # 预处理每个键值对
-        return preprocessed_obs # 返回预处理后的观察
+    return wrapper
 
 
-def round_up(number: float, decimals: int = 2) -> float:
+def print_dash(num_dash: int = 50):
     """
-    Round a number up to a specified number of decimal places.
-
-    :param number: The number to be rounded.
-    :param decimals: The number of decimal places to round to (default is 2).
-    :return: The rounded number.
+    Print "______________________"
+    for num_dash times
     """
-    if not isinstance(decimals, int):
-        raise TypeError("Decimal places must be an integer")
-    if decimals < 0:
-        raise ValueError("Decimal places must be 0 or more")
-
-    if decimals == 0:
-        return math.ceil(number)
-    else:
-        factor = 10**decimals
-        return math.ceil(number * factor) / factor
+    print("_" * num_dash)
 
 
-def ensure_numpy_array(arr):
-    if not isinstance(arr, np.ndarray):
-        arr = np.array(arr)
-    return arr
-
-
-def gini(array):
-    """Calculate the Gini coefficient of a numpy array."""
-    # based on bottom eq:
-    # http://www.statsdirect.com/help/generatedimages/equations/equation154.svg
-    # from:
-    # http://www.statsdirect.com/help/default.htm#nonparametric_methods/gini.htm
-    # All values are treated equally, arrays must be 1d:
-    array = ensure_numpy_array(array).flatten()
-    if np.amin(array) < 0:
-        # Values cannot be negative:
-        array -= np.amin(array)
-    # Values cannot be 0:
-    array = array + 0.0000001
-    # Values must be sorted:
-    array = np.sort(array)
-    # Index per array element:
-    index = np.arange(1, array.shape[0] + 1)
-    # Number of array elements:
-    n = array.shape[0]
-    # Gini coefficient:
-    return (np.sum((2 * index - n - 1) * array)) / (n * np.sum(array))
-
-
-class FileManager:
-    def __init__(self, base_dir, max_files=5, suffix="pkl"):
-        self.base_dir = base_dir
-        self.max_files = max_files
-        self.suffix = suffix
-
-    def create_file(self, obj, path):
-        existing_files = self.get_existing_files()
-
-        # If the maximum number of files is reached, delete the oldest one
-        if len(existing_files) >= self.max_files:
-            oldest_file = min(existing_files, key=os.path.getctime)
-            os.remove(oldest_file)
-
-        # Create a new file
-        new_file = path
-        with open(new_file, "wb") as file_handler:
-            # Use protocol>=4 to support saving large objects
-            pickle.dump(obj, file_handler, protocol=pickle.HIGHEST_PROTOCOL)
-
-    def get_existing_files(self):
-        return glob.glob(os.path.join(self.base_dir, f"*.{self.suffix}"))
-    
-
-def find_latest_file(directory, extension):
-    file_list = glob.glob(os.path.join(directory, f"*.{extension}"))
-    if not file_list:
-        return None
-    return max(file_list, key=os.path.getmtime)
-
-
-def consecutive_counts(row):
+def print_box(string, num_dash: int = 50):
     """
-    Calculate the consecutive counts, average counts, and longest consecutive counts for a given row.
-
-    :param row: The row for which consecutive counts should be calculated.
-    :return: A tuple of consecutive counts, average counts, and longest consecutive counts.
+    print the given string as:
+    _____________________
+    string
+    _____________________
     """
-    consecutive_counts = []
-    current_count = 0
-    current_target = None
-    total_counts = {}
-    longest_consecutive = {}
-
-    for num in row:
-        if num == current_target:
-            current_count += 1
-        else:
-            if current_target is not None:
-                consecutive_counts.append(current_count)
-                if current_target not in total_counts:
-                    total_counts[current_target] = [current_count, 1]
-                else:
-                    total_counts[current_target][0] += current_count
-                    total_counts[current_target][1] += 1
-
-                if current_count > longest_consecutive.get(current_target, 0):
-                    longest_consecutive[current_target] = current_count
-
-            current_target = num
-            current_count = 1
-
-    consecutive_counts.append(current_count)
-    if current_target not in total_counts:
-        total_counts[current_target] = [current_count, 1]
-    else:
-        total_counts[current_target][0] += current_count
-        total_counts[current_target][1] += 1
-        
-    if current_count > longest_consecutive.get(current_target, 0):
-        longest_consecutive[current_target] = current_count
+    print_dash(num_dash)
+    print(string)
+    print_dash(num_dash)
 
 
-    return consecutive_counts, total_counts,longest_consecutive
+def print_args(args: argparse.Namespace):
+    """
+    Print the args in a pretty table
+    """
+    box_dist = 50
+    print_dash(box_dist)
+    half_len = int((box_dist - len("Arguments") - 5) / 2)
+    print("||" + " " * half_len + "Arguments" + " " * half_len + " ||")
+    print_dash(box_dist)
+    for k, v in vars(args).items():
+        len_line = len(f"{k}: {str(v)}")
+        print("|| " + f"{k}: {str(v)}" + " " * (box_dist - len_line - 5) + "||")
+    print_dash(box_dist)
 
 
-def get_next_elements(arr, start_index, num_elements):
-    # Calculate the effective start and end indices
-    effective_start = start_index % len(arr)
-    effective_end = (effective_start + num_elements) % len(arr)
-
-    # Handle the case where the range wraps around the array boundary
-    if effective_end > effective_start:
-        result_indices = list(range(effective_start, effective_end))
-    else:
-        result_indices = list(range(effective_start, len(arr))) + list(range(0, effective_end))
-
-    return result_indices
-
-def get_past_idx(start_index, array_size, num_elements):
-    indices = [(start_index - i) % array_size for i in range(1, num_elements + 1)]
-    return indices
-
-def convert_array_to_two_arrays(input_array):
-    # Check if all elements in the array are within the valid range (0-31)
-    if any(not (0 <= num <= 31) for num in input_array):
-        raise ValueError("All elements in the input array must be integers in the range 0-31")
-
-    # Initialize empty arrays for the first bit and second part
-    first_bits = []
-    second_parts = []
-
-    # Process each element in the input array
-    for number in input_array:
-        # Extract the first bit (0 or 1)
-        first_bit = number // 16
-
-        # Extract the second part (0-15)
-        second_part = number % 16
-
-        # Append the results to the respective arrays
-        first_bits.append(first_bit)
-        second_parts.append(second_part)
-
-    # Return two arrays with the results
-    return first_bits, second_parts
-
-def convert_arrays_to_original(first_bits, second_parts):
-    # Check if the input arrays have the same length
-    if len(first_bits) != len(second_parts):
-        raise ValueError("Input arrays must have the same length")
-
-    # Initialize an empty array for the reconstructed original array
-    original_array = []
-
-    # Combine the corresponding elements from first_bits and second_parts
-    for first_bit, second_part in zip(first_bits, second_parts):
-        # Calculate the original number
-        original_number = first_bit * 16 + second_part
-
-        # Append the original number to the array
-        original_array.append(original_number)
-
-    return original_array
+def connected_to_internet(url: str = "http://www.google.com/", timeout: int = 5):
+    """
+    Check if system is connected to the internet
+    Used when running code on MIT Supercloud
+    """
+    try:
+        _ = requests.get(url, timeout=timeout)
+        return True
+    except requests.ConnectionError:
+        print("No internet connection available.")
+    return False
 
 
-def save_array(array, save_path, filename):
-    # Convert the array to a NumPy array if it's not already
-    if not isinstance(array, np.ndarray):
-        array = np.array(array)
-
-    # Construct the full file path
-    full_path = os.path.join(save_path, filename)
-
-    # Check if the file already exists
-    if os.path.exists(full_path):
-        # If the file exists, delete it
-        os.remove(full_path)
-        # print(f"Deleted existing file at {full_path}")
-
-    # Save the array using NumPy
-    np.savez(full_path,array)
-    print(f"Array saved successfully to {full_path}")
+def tile_images(img_nhwc):
+    """
+    Tile N images into one big PxQ image
+    (P,Q) are chosen to be as close as possible, and if N
+    is square, then P=Q.
+    input: img_nhwc, list or array of images, ndim=4 once turned into array
+        n = batch index, h = height, w = width, c = channel
+    returns:
+        bigim_HWc, ndarray with ndim=3
+    """
+    img_nhwc = np.asarray(img_nhwc)
+    N, h, w, c = img_nhwc.shape
+    H = int(np.ceil(np.sqrt(N)))
+    W = int(np.ceil(float(N) / H))
+    img_nhwc = np.array(list(img_nhwc) + [img_nhwc[0] * 0 for _ in range(N, H * W)])
+    img_HWhwc = img_nhwc.reshape(H, W, h, w, c)
+    img_HhWwc = img_HWhwc.transpose(0, 2, 1, 3, 4)
+    img_Hh_Ww_c = img_HhWwc.reshape(H * h, W * w, c)
+    return img_Hh_Ww_c
