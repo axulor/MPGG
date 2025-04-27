@@ -6,7 +6,7 @@ import numpy as np
 from numpy import ndarray as arr
 from scipy import sparse
 import argparse
-from typing import Callable, List, Tuple, Dict, Union, Optional
+from typing import List, Tuple, Dict, Optional
 
 # ==============================================================================
 # == Agent Class Definition ==
@@ -54,7 +54,7 @@ class MultiAgentGraphEnv(gym.Env):
     4. 计算和缓存智能体间的距离。
     5. 构建和更新图结构 (节点特征, 邻接信息, 边列表)。
     6. 提供标准的 Gym 环境接口 (step, reset, observation_space, action_space)。
-    7. 计算观测、奖励、完成状态和信息。
+    7. 计算观测、奖励、完成状态和信息
     """
     metadata = {"render.modes": ["human", "rgb_array"]}
 
@@ -164,25 +164,25 @@ class MultiAgentGraphEnv(gym.Env):
 
         Returns:
             A tuple containing the initial observations for each agent:
-            - obs_n: 每个智能体的初始局部观察列表。
-            - agent_id_n: 每个智能体的初始ID列表。
-            - node_obs_n: 每个智能体的初始节点特征观察列表。
-            - adj_n: 每个智能体的初始邻接矩阵观察列表。
+            - obs_n: 每个智能体的初始局部观察列表，列表元素shape=(7,)
+            - agent_id_n: 每个智能体的初始ID列表
+            - node_obs_n: 每个智能体的初始节点特征观察列表, 列表元素shape=(100, 7)
+            - adj_n: 每个智能体的初始邻接矩阵观察列表
         """
         self.current_step = 0
         self.current_time = 0
 
-        # --- 重置智能体状态 (来自原 Scenario.reset_world) ---
+        # --- 重置智能体状态 ---
         shuffled_agents = list(self.agents) # 创建副本以进行 shuffle
         np.random.shuffle(shuffled_agents)
         half = (self.num_agents + 1) // 2
-        cooperators = set(shuffled_agents[:half])
+        cooperators = set(shuffled_agents[:half]) # 取一半作为合作者
 
         for agent in self.agents:
             agent.pos = np.random.rand(2) * self.world_size   # 随机位置
             theta = np.random.rand() * 2 * np.pi
             agent.vel = self.speed * np.array([np.cos(theta), np.sin(theta)])  # 随机速度方向
-            agent.last_payoff = np.array([0.0], dtype=np.float32) # 重置上一次收益
+            agent.last_payoff = np.array([0.0], dtype=np.float32) # 重置收益
             agent.strategy = np.array([1 if agent in cooperators else 0], dtype=np.int32) # 设置初始策略
             agent.action = np.zeros(2, dtype=np.float32) # 重置动作
 
@@ -193,9 +193,9 @@ class MultiAgentGraphEnv(gym.Env):
         # --- 获取初始观测 ---
         obs_n = [self._get_obs(agent) for agent in self.agents]
         agent_id_n = [self._get_id(agent) for agent in self.agents]
-        node_obs_n_all, adj_n_all = self._get_graph_obs(None) # 获取全局图信息
+        node_obs_n_all, adj_n_all = self._get_graph_obs() # 获取全局图信息
 
-        # 注意：原 graph_observation 返回的是全局信息，所有 agent 接收相同内容
+        # 所有 agent 接收相同图结构信息
         node_obs_n = [node_obs_n_all] * self.num_agents
         adj_n = [adj_n_all] * self.num_agents
 
@@ -258,7 +258,7 @@ class MultiAgentGraphEnv(gym.Env):
 
         # -- 7. 获取每个智能体的返回信息 --
         obs_n, reward_n, done_n, info_n = [], [], [], []
-        node_obs_n_all, adj_n_all = self._get_graph_obs(None) # 全局图信息
+        node_obs_n_all, adj_n_all = self._get_graph_obs() # 全局图信息
         node_obs_n = [node_obs_n_all] * self.num_agents
         adj_n = [adj_n_all] * self.num_agents
         agent_id_n = [self._get_id(agent) for agent in self.agents]
@@ -410,27 +410,27 @@ class MultiAgentGraphEnv(gym.Env):
 
     def _get_agent_feat(self, agent: Agent) -> arr:
         """
-        构造指定智能体的节点/局部特征向量 (float32)。
-        包括归一化位置、归一化速度、策略、上一轮收益，以及实体类型ID。
+        构造指定智能体的节点/局部特征向量 (float32)
+        包括归一化位置、归一化速度、策略、上一轮收益，以及实体类型ID
         """
         pos = agent.pos / self.world_size
-        vel = np.clip(agent.vel / (self.speed + 1e-8), -1.0, 1.0)
+        vel = np.clip(agent.vel / (self.speed + 1e-8), -1.0, 1.0) # TODO 似乎有点问题
         strategy = agent.strategy
         last_payoff = agent.last_payoff
         
-        # --- 新增 ---
+        # --- 兼容性设置 ---
         entity_type_id = 0 # 0 代表 Agent 类型
         # -----------
 
         features = np.hstack([
-            pos.flatten(),          # (2,)
-            vel.flatten(),          # (2,)
-            strategy.flatten(),     # (1,)
-            last_payoff.flatten(),   # (1,)
-            np.array([entity_type_id], dtype=np.float32) # (1,) <-- 添加类型ID
+            pos.flatten(),              # 位置 (2,)
+            vel.flatten(),              # 速度 (2,)
+            strategy.flatten(),         # 策略(1,)
+            last_payoff.flatten(),      # 收益(1,)
+            np.array([entity_type_id], dtype=np.float32) # 类型ID(1,) 
         ]).astype(np.float32)       # 总维度变为 7
 
-        # (NaN/Inf 检查保持不变)
+        # TODO 返回值检查
         if np.isnan(features).any() or np.isinf(features).any():
             print(f"WARNING: NaN or Inf found in features for agent {agent.id}! Replacing with 0.")
             features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
@@ -468,20 +468,17 @@ class MultiAgentGraphEnv(gym.Env):
         return np.array([agent.id], dtype=np.int32)
 
 
-    def _get_graph_obs(self, agent: Optional[Agent]) -> Tuple[arr, arr]:
+    def _get_graph_obs(self) -> Tuple[arr, arr]:
         """
-        构建并返回全局图结构观测：节点特征矩阵和邻接距离矩阵。
-        注意：此实现返回所有智能体共享的全局信息。
-
-        Args:
-            agent: 当前智能体 (在此实现中未使用，因为返回全局信息)。
+        构建并返回全局图结构观测：节点特征矩阵和邻接距离矩阵
+        注意：此实现返回所有智能体共享的全局信息
 
         Returns:
             - node_obs (np.ndarray): 所有节点的特征矩阵 (N, num_node_feats)。
             - adj (np.ndarray): 邻接距离矩阵 (N, N)。
         """
         # 1. 获取所有节点的特征
-        node_features = [self._get_agent_feat(a) for a in self.agents]
+        node_features = [self._get_agent_feat(agent) for agent in self.agents]
         node_obs = np.array(node_features, dtype=np.float32)
 
         # 2. 获取缓存的距离矩阵作为邻接信息
