@@ -477,13 +477,11 @@ class GMPERunner:
         self.log_env(eval_env_infos, total_num_steps)
 
 
-    # --- 以下方法来自原 BaseRunner ---
-
     def train(self):
         """用 Buffer 中的数据训练策略 """
         self.trainer.prep_training() # 设置网络为训练模式
         train_infos = self.trainer.train(self.buffer) # 调用 trainer 的训练方法
-        self.buffer.after_update() # 清空 buffer
+        self.buffer.after_update() # 先采一整段轨迹 → 更新网络 → 再采新的一整段
         return train_infos
 
     def save(self):
@@ -509,6 +507,7 @@ class GMPERunner:
             return
         actor_load_path = str(self.model_dir) + "/actor.pt"
         critic_load_path = str(self.model_dir) + "/critic.pt"
+        
         if not os.path.exists(actor_load_path):
             print(f"错误：找不到 Actor 模型文件: {actor_load_path}")
             return
