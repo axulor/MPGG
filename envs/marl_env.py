@@ -199,6 +199,18 @@ class MultiAgentGraphEnv(gym.Env):
         node_obs_n = [node_obs_n_all] * self.num_agents
         adj_n = [adj_n_all] * self.num_agents
 
+        # print(f"obs_n:\ttype={type(obs_n)}, length={len(obs_n)}")
+        # print(f"obs_n[0]:\ttype={type(obs_n[0])}, shape={obs_n[0].shape}, dtype={obs_n[0].dtype}")
+
+        # print(f"agent_id_n:\ttype={type(agent_id_n)}, length={len(agent_id_n)}")
+        # print(f"agent_id_n[0]:\ttype={type(agent_id_n[0])}, shape={agent_id_n[0].shape}, dtype={agent_id_n[0].dtype}")
+
+        # print(f"node_obs_n:\ttype={type(node_obs_n)}, length={len(node_obs_n)}")
+        # print(f"node_obs_n[0]:\ttype={type(node_obs_n[0])}, shape={node_obs_n[0].shape}, dtype={node_obs_n[0].dtype}")
+
+        # print(f"adj_n:\ttype={type(adj_n)}, length={len(adj_n)}")
+        # print(f"adj_n[0]:\ttype={type(adj_n[0])}, shape={adj_n[0].shape}, dtype={adj_n[0].dtype}")
+
         return obs_n, agent_id_n, node_obs_n, adj_n
 
 

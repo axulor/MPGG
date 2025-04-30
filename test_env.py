@@ -13,7 +13,7 @@ def main():
         cost=1.0,
         r=1.5,
         beta=0.5,
-        discrete_action=True
+        discrete_action=False
     )
 
     # 创建环境实例
@@ -52,6 +52,7 @@ def main():
     share_agent_id = share_agent_id.repeat(env.num_agents, axis=1)
 
     print("\n-- Demonstration of share_obs and share_agent_id --")
+    print("\n")
     print(f"share_obs.shape = {share_obs.shape}")
     print(f"share_obs[0,0,:5] sample = {share_obs[0,0,:5]}")
     print(f"share_obs[0,1,:5] should equal share_obs[0,0,:5]: {np.allclose(share_obs[0,0], share_obs[0,1])}")

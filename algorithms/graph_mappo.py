@@ -41,7 +41,6 @@ class GR_MAPPO():
         self.huber_delta = args.huber_delta
 
         self._use_recurrent_policy = args.use_recurrent_policy
-        # print(f'Use recurrent policy: {self._use_recurrent_policy}')
         self._use_naive_recurrent = args.use_naive_recurrent_policy
         self._use_max_grad_norm = args.use_max_grad_norm
         self._use_clipped_value_loss = args.use_clipped_value_loss
@@ -66,23 +65,18 @@ class GR_MAPPO():
                     return_batch:Tensor, 
                     active_masks_batch:Tensor) -> Tensor:
         """
-            Calculate value function loss.
-            values: (torch.Tensor) 
-                value function predictions.
-            value_preds_batch: (torch.Tensor) 
-                "old" value  predictions from data batch (used for value clip loss)
-            return_batch: (torch.Tensor) 
-                reward to go returns.
-            active_masks_batch: (torch.Tensor) 
-                denotes if agent is active or dead at a given timesep.
-
-            :return value_loss: (torch.Tensor) 
-                value function loss.
+        计算价值网络的损失。
+        - values: 当前网络对状态值 V(s) 的预测, shape=(batch,1) 或 (batch,)
+        - value_preds_batch: 旧网络在采样时对同一批次状态的预测，用于“值函数截断”损失
+        - return_batch: “回报”或“优势加价值”计算后得到的真实目标 return, shape=(batch,1)
+        - active_masks_batch: mask 掩码, 标记哪些样本是有效(agent仍存活), 哪些是无效(已done)
+        返回：
+            单个标量 loss, 用于反向传播更新价值网络
         """
         value_pred_clipped = value_preds_batch + (values - 
                             value_preds_batch).clamp(-self.clip_param,
                                                     self.clip_param)
-        if self._use_popart or self._use_valuenorm:
+        if self._use_popart or self._use_valuenorm: 
             self.value_normalizer.update(return_batch)
             error_clipped = self.value_normalizer.normalize(return_batch) - \
                             value_pred_clipped
@@ -110,6 +104,7 @@ class GR_MAPPO():
             value_loss = value_loss.mean()
 
         return value_loss
+    
     @torch.cuda.amp.autocast()
     def ppo_update(self, 
                 sample:Tuple, 
@@ -117,24 +112,17 @@ class GR_MAPPO():
                                                 Tensor, Tensor, 
                                                 Tensor, Tensor]:
         """
-            Update actor and critic networks.
-            sample: (Tuple) 
-                contains data batch with which to update networks.
-            update_actor: (bool) 
-                whether to update actor network.
-
-            :return value_loss: (torch.Tensor) 
-                value function loss.
-            :return critic_grad_norm: (torch.Tensor) 
-                gradient norm from critic update.
-            ;return policy_loss: (torch.Tensor) 
-                actor(policy) loss value.
-            :return dist_entropy: (torch.Tensor) 
-                action entropies.
-            :return actor_grad_norm: (torch.Tensor) 
-                gradient norm from actor update.
-            :return imp_weights: (torch.Tensor) 
-                importance sampling weights.
+        使用一个小批次数据对 Actor 和 Critic 同时做一次 PPO 更新
+        
+        返回：
+        value_loss          价值函数损失（未乘 coef）
+        critic_grad_norm    Critic 网络梯度范数
+        policy_loss         策略（Actor）损失
+        dist_entropy        策略输出的熵（鼓励探索）
+        actor_grad_norm     Actor 网络梯度范数
+        imp_weights         重要性采样权重 π/π_old
+        actor_backward_time Actor 反向传播耗时
+        critic_backward_time Critic 反向传播耗时
         """
         share_obs_batch, obs_batch, node_obs_batch, adj_batch, agent_id_batch, \
         share_agent_id_batch, rnn_states_batch, rnn_states_critic_batch, \
@@ -307,9 +295,6 @@ class GR_MAPPO():
                 train_info['critic_grad_norm'] += critic_grad_norm
                 train_info['ratio'] += imp_weights.mean()
 
-            # print(f'PPO epoch time: {time.time() - st}')
-            # print(f'PPO epoch actor backward time: {actor_backward_time}')
-            # print(f'PPO epoch critic backward time: {critic_backward_time}')
 
         num_updates = self.ppo_epoch * self.num_mini_batch
 

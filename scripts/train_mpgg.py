@@ -45,7 +45,7 @@ all_args = SimpleNamespace(
     seed=1,                         # 随机种子
     cuda=True,                      # 尝试使用 GPU
     cuda_deterministic=False,       # 不启用 CUDA 确定性 (为了速度)
-    n_training_threads=1,           # PyTorch 训练线程数
+    n_training_threads=2,           # PyTorch 训练线程数
     n_rollout_threads=1,            # 并行环境数 (固定为 1)
     n_eval_rollout_threads=1,       # 评估环境数 (固定为 1)
     n_render_rollout_threads=1,     # 渲染环境数 (即使不用也要定义，base_runner 需要)
@@ -63,6 +63,7 @@ all_args = SimpleNamespace(
     r=3.0,                        # MPGG PGG 乘数因子 (示例值)
     beta=0.5,                     # MPGG Fermi 噪声参数 (示例值)
     max_cycles=25,                # MPGG 环境最大步数
+    discrete_action = False,      # 默认为连续动作
     episode_length=50,           # Replay Buffer 中存储的时序轨迹的长度  
     # --- 其他场景兼容参数 (设为 MPGG 的合理值或 0) ---
     num_obstacles=0,              # MPGG 无障碍物
@@ -106,7 +107,7 @@ all_args = SimpleNamespace(
     max_edge_dist=10.0,           # **关键:** GNN 构建边的最大距离 (应等于 MPGG radius)
     graph_feat_type="relative",   # GNN 节点特征类型 (来自原始可运行配置)
     actor_graph_aggr="node",      # Actor GNN 聚合方式 (来自原始可运行配置)
-    critic_graph_aggr="global",     # **关键修正:** Critic 使用全局聚合
+    critic_graph_aggr="global",   # **关键修正:** Critic 使用全局聚合
     global_aggr_type="mean",      # 指定全局聚合类型
     use_cent_obs=True,            # Critic MLP 是否额外接收中心化观测
 
@@ -132,13 +133,13 @@ all_args = SimpleNamespace(
     gae_lambda=0.95,              # GAE lambda 参数
     use_proper_time_limits=False, # GAE 是否考虑 episode 结束
     use_huber_loss=False,         # 不使用 Huber Loss
-    use_value_active_masks=True,  # 在值损失中屏蔽 padding 数据
-    use_policy_active_masks=True, # 在策略损失中屏蔽 padding 数据
+    use_value_active_masks=False,  # 在值损失中屏蔽 padding 数据
+    use_policy_active_masks=False, # 在策略损失中屏蔽 padding 数据
     huber_delta=10.0,             # Huber loss delta (如果使用)
     weight_decay=0,               # 权重衰减
 
     # === 运行参数 ===
-    use_linear_lr_decay=False,    # 不使用学习率线性衰减
+    use_linear_lr_decay=True,    # 不使用学习率线性衰减
 
     # === 保存与日志 ===
     save_interval=50,             # 模型保存频率 (按训练次数或回合数，取决于 runner 实现)

@@ -11,14 +11,12 @@ from typing import Optional
 
 class ACTLayer(nn.Module):
     """
-    MLP Module to compute actions.
-    action_space: (gym.Space) action space.
-    inputs_dim: int
-        Dimension of network input.
-    use_orthogonal: bool
-        Whether to use orthogonal weight init or xavier uniform.
-    gain: float
-        Gain of the output layer of the network.
+    用于计算动作的MLP模块
+    
+    action_space: Gym 空间对象，描述动作维度和类型（仅支持离散、连续）
+    inputs_dim: 网络输入张量的特征维度, int
+    use_orthogonal: 控制输出层权重初始化方式, bool
+    gain: 网络输出层的增益, float
     """
 
     def __init__(
@@ -34,29 +32,10 @@ class ACTLayer(nn.Module):
         elif action_space.__class__.__name__ == "Box":
             action_dim = action_space.shape[0]
             self.action_out = DiagGaussian(inputs_dim, action_dim, use_orthogonal, gain)
-        elif action_space.__class__.__name__ == "MultiBinary":
-            action_dim = action_space.shape[0]
-            self.action_out = Bernoulli(inputs_dim, action_dim, use_orthogonal, gain)
-        elif action_space.__class__.__name__ == "MultiDiscrete":
-            self.multi_discrete = True
-            action_dims = action_space.high - action_space.low + 1
-            self.action_outs = []
-            for action_dim in action_dims:
-                self.action_outs.append(
-                    Categorical(inputs_dim, action_dim, use_orthogonal, gain)
-                )
-            self.action_outs = nn.ModuleList(self.action_outs)
         else:  # discrete + continous
-            self.mixed_action = True
-            continous_dim = action_space[0].shape[0]
-            discrete_dim = action_space[1].n
-            self.action_outs = nn.ModuleList(
-                [
-                    DiagGaussian(inputs_dim, continous_dim, use_orthogonal, gain),
-                    Categorical(inputs_dim, discrete_dim, use_orthogonal, gain),
-                ]
-            )
-
+            print(f"错误: 暂不支持的动作空间类型 {action_space.__class__.__name__}")
+            raise NotImplementedError
+        
     def forward(
         self,
         x: torch.tensor,
@@ -64,52 +43,33 @@ class ACTLayer(nn.Module):
         deterministic: bool = False,
     ):
         """
-        Compute actions and action logprobs from given input.
-        x: torch.Tensor
-            Input to network.
-        available_actions: torch.Tensor
-            Denotes which actions are available to agent
-            (if None, all actions available)
-        deterministic: bool
-            Whether to sample from action distribution or return the mode.
+        计算给定输入下的动作及其对数概率。
 
-        :return actions: torch.Tensor
-            actions to take.
-        :return action_log_probs: torch.Tensor
-            log probabilities of taken actions.
+        参数：
+            x: torch.Tensor
+                网络的输入张量。
+            available_actions: Optional[torch.Tensor]
+                告知哪些动作对智能体是可用的（默认所有动作都可用）。
+            deterministic: bool
+                是否直接返回分布的最优模式(True), 否则根据分布进行采样False
+
+        返回：
+            actions: torch.Tensor
+                要执行的动作。
+            action_log_probs: torch.Tensor
+                所选动作的对数概率。
         """
-        if self.mixed_action:
-            actions = []
-            action_log_probs = []
-            for action_out in self.action_outs:
-                action_logit = action_out(x)
-                action = action_logit.mode() if deterministic else action_logit.sample()
-                action_log_prob = action_logit.log_probs(action)
-                actions.append(action.float())
-                action_log_probs.append(action_log_prob)
+        # print(f"x:\ttype={type(x)}, shape={x.shape}, dtype={x.dtype}")
+        # print(f"x[0]:\ttype={type(x[0])}, shape={x[0].shape}, dtype={x[0].dtype}")
+        action_logits = self.action_out(x)        # 将数据送入分布类 
+        # print(action_logits) 
+        actions = action_logits.mode() if deterministic else action_logits.sample() # 从分布类中采样动作向量，2维
+        action_log_probs = action_logits.log_probs(actions) # 二维动作向量计算成对数概率
+        # print(f"actions:\ttype={type(actions)}, shape={actions.shape}, dtype={actions.dtype}")
+        # print(f"actions[0]:\ttype={type(actions[0])}, shape={actions[0].shape}, dtype={actions[0].dtype}")  
+        # print(f"action_log_probs:\ttype={type(action_log_probs)}, shape={action_log_probs.shape}, dtype={action_log_probs.dtype}")
+        # print(f"action_log_probs[0]:\ttype={type(action_log_probs[0])}, shape={action_log_probs[0].shape}, dtype={action_log_probs[0].dtype}")  
 
-            actions = torch.cat(actions, -1)
-            action_log_probs = torch.sum(
-                torch.cat(action_log_probs, -1), -1, keepdim=True
-            )
-
-        elif self.multi_discrete:
-            actions = []
-            action_log_probs = []
-            for action_out in self.action_outs:
-                action_logit = action_out(x)
-                action = action_logit.mode() if deterministic else action_logit.sample()
-                action_log_prob = action_logit.log_probs(action)
-                actions.append(action)
-                action_log_probs.append(action_log_prob)
-
-            actions = torch.cat(actions, -1)
-            action_log_probs = torch.cat(action_log_probs, -1)
-
-        else:
-            action_logits = self.action_out(x, available_actions)
-            actions = action_logits.mode() if deterministic else action_logits.sample()
-            action_log_probs = action_logits.log_probs(actions)
 
         return actions, action_log_probs
 
@@ -212,7 +172,7 @@ class ACTLayer(nn.Module):
             dist_entropy = torch.tensor(dist_entropy).mean()
 
         else:
-            action_logits = self.action_out(x, available_actions)
+            action_logits = self.action_out(x)
             action_log_probs = action_logits.log_probs(action)
             if active_masks is not None:
                 dist_entropy = (

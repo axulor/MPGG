@@ -112,12 +112,12 @@ class GMPERunner:
         """主训练循环"""
         print("  (Runner) 开始 Warmup...")
         self.warmup() # 初始化 Buffer 中的第一个时间步数据
-        print("  (Runner) Warmup 完成.")
+        print("  (Runner) Warmup 完成 ")
 
         start_time = time.time() # 记录开始时间
         episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads # 计算总共需要运行的回合数
         print(f"  (Runner) 总训练步数: {self.num_env_steps}, 每回合步数: {self.episode_length}, 并行环境数: {self.n_rollout_threads}")
-        print(f"  (Runner) 将运行 {episodes} 个回合。")
+        print(f"  (Runner) 将运行 {episodes} 个回合 ")
 
         # --- 核心训练循环 ---
         for episode in range(episodes):
@@ -196,6 +196,24 @@ class GMPERunner:
         # 1. 重置环境，获取初始状态
         obs, agent_id, node_obs, adj = self.envs.reset()
 
+        
+        # print(f"obs:\ttype={type(obs)}, length={len(obs)}")
+        # print(f"obs[0]:\ttype={type(obs[0])}, shape={obs[0].shape}, dtype={obs[0].dtype}")
+        # print(obs)
+
+        # print(f"agent_id:\ttype={type(agent_id)}, length={len(agent_id)}")
+        # print(f"agent_id[0]:\ttype={type(agent_id[0])}, shape={agent_id[0].shape}, dtype={agent_id[0].dtype}")
+        # print(agent_id)
+
+        # print(f"node_obs:\ttype={type(node_obs)}, length={len(node_obs)}")
+        # print(f"node_obs[0]:\ttype={type(node_obs[0])}, shape={node_obs[0].shape}, dtype={node_obs[0].dtype}")
+        # print(node_obs)
+
+        # print(f"adj:\ttype={type(adj)}, length={len(adj)}")
+        # print(f"adj[0]:\ttype={type(adj[0])}, shape={adj[0].shape}, dtype={adj[0].dtype}")
+        # print(adj)
+        
+
         # 2. 准备中心化观测 (Share Observation)
         if self.use_centralized_V:
             share_obs = obs.reshape(self.n_rollout_threads, -1)
@@ -206,6 +224,24 @@ class GMPERunner:
             share_obs = obs # (N,D), N代表智能体个数
             share_agent_id = agent_id # (N,1), 1表示id向量维度为1
 
+        # print(f"share_obs:\ttype={type(share_obs)}, shape={share_obs.shape}, dtype={share_obs.dtype}")
+        # print(f"share_obs[0]:\ttype={type(share_obs[0])}, shape={share_obs[0].shape}, dtype={share_obs[0].dtype}")
+
+        # print(f"obs:\ttype={type(obs)}, shape={obs.shape}, dtype={obs.dtype}")
+        # print(f"obs[0]:\ttype={type(obs[0])}, shape={obs[0].shape}, dtype={obs[0].dtype}")
+
+        # print(f"node_obs:\ttype={type(node_obs)}, shape={node_obs.shape}, dtype={node_obs.dtype}")
+        # print(f"node_obs[0]:\ttype={type(node_obs[0])}, shape={node_obs[0].shape}, dtype={node_obs[0].dtype}")
+
+        # print(f"adj:\ttype={type(adj)}, shape={adj.shape}, dtype={adj.dtype}")
+        # print(f"adj[0]:\ttype={type(adj[0])}, shape={adj[0].shape}, dtype={adj[0].dtype}")
+
+
+        # print(f"agent_id:\ttype={type(agent_id)}, shape={agent_id.shape}, dtype={agent_id.dtype}")
+        # print(f"agent_id[0]:\ttype={type(agent_id[0])}, shape={agent_id[0].shape}, dtype={agent_id[0].dtype}")
+
+        # print(f"share_agent_id:\ttype={type(share_agent_id)}, shape={share_agent_id.shape}, dtype={share_agent_id.dtype}")
+        # print(f"share_agent_id[0]:\ttype={type(share_agent_id[0])}, shape={share_agent_id[0].shape}, dtype={share_agent_id[0].dtype}")
         # 3. 将初始状态存入 Buffer 的第 0 步
         self.buffer.share_obs[0] = share_obs.copy()
         self.buffer.obs[0] = obs.copy()
@@ -242,48 +278,78 @@ class GMPERunner:
 
         # --- 调用策略网络 ---
         value, action, action_log_prob, rnn_states, rnn_states_critic = self.trainer.policy.get_actions(
-            share_obs_batch,    # 作为 cent_obs 传入
+            share_obs_batch,    
             obs_batch,
             node_obs_batch,
             adj_batch,
-            agent_id_batch,     # Actor 可能用
-            share_agent_id_batch,# Critic 可能用
+            agent_id_batch,     
+            share_agent_id_batch,
             rnn_states_actor_batch,
             rnn_states_critic_batch,
             masks_batch,
             deterministic=False # 训练时采样
         )
 
+        # print(f"value:\ttype={type(value)}, shape={value.shape}, dtype={value.dtype}")
+        # print(f"value[0]:\ttype={type(value[0])}, shape={value[0].shape}, dtype={value[0].dtype}")
+
+        # print(f"action:\ttype={type(action)}, shape={action.shape}, dtype={action.dtype}")
+        # print(f"action[0]:\ttype={type(action[0])}, shape={action[0].shape}, dtype={action[0].dtype}")
+
+        # print(f"action_log_prob:\ttype={type(action_log_prob)}, shape={action_log_prob.shape}, dtype={action_log_prob.dtype}")
+        # print(f"action_log_prob[0]:\ttype={type(action_log_prob[0])}, shape={action_log_prob[0].shape}, dtype={action_log_prob[0].dtype}")
+
+
+
         # --- 处理网络输出 ---
-        values = np.array(np.split(_t2n(value), self.n_rollout_threads)) # 按并行线程数拆分成 T 段
+        values = np.array(np.split(_t2n(value), self.n_rollout_threads)) # 加上并行线程数 T 维度
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
         action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads)) # 重新构造一个 (T, …) 的数组
+
+        # print(f"values:\ttype={type(values)}, shape={values.shape}, dtype={values.dtype}")
+        # print(f"values[0]:\ttype={type(values[0])}, shape={values[0].shape}, dtype={values[0].dtype}")
+
+        # print(f"actions:\ttype={type(actions)}, shape={actions.shape}, dtype={actions.dtype}")
+        # print(f"actions[0]:\ttype={type(actions[0])}, shape={actions[0].shape}, dtype={actions[0].dtype}")
+
+        # print(f"action_log_probs:\ttype={type(action_log_probs)}, shape={action_log_probs.shape}, dtype={action_log_probs.dtype}")
+        # print(f"action_log_probs[0]:\ttype={type(action_log_probs[0])}, shape={action_log_probs[0].shape}, dtype={action_log_probs[0].dtype}")
+
+        # i = 6
+        # v = value[i,0].item()
+        # a = action[i,0].item()
+        # lp = action_log_prob[i,0].item()
+        # print(f"Agent {i} → value={v:.4f}, action={a}, log_prob={lp:.4f}")
+
+        # i = 7
+        # v = value[i,0].item()
+        # a = action[i,0].item()
+        # lp = action_log_prob[i,0].item()
+        # print(f"Agent {i} → value={v:.4f}, action={a}, log_prob={lp:.4f}")
+
+        # i = 8
+        # v = value[i,0].item()
+        # a = action[i,0].item()
+        # lp = action_log_prob[i,0].item()
+        # print(f"Agent {i} → value={v:.4f}, action={a}, log_prob={lp:.4f}")
+
 
         rnn_states = np.array(np.split(_t2n(rnn_states), self.n_rollout_threads))
         rnn_states_critic = np.array(np.split(_t2n(rnn_states_critic), self.n_rollout_threads))
 
         # --- 转换动作为环境格式 ---
-        # TODO 这里似乎可以简化
         actions_env = None
         env_action_space = self.envs.action_space[0]
-        if env_action_space.__class__.__name__ == "MultiDiscrete": 
-            # 对每个子离散分支分别做 one-hot，然后拼接
-            all_one_hot_parts = []
-            num_parts = env_action_space.shape
-            action_dims = env_action_space.high + 1
-            for i in range(num_parts):
-                action_part_indices = actions[:, :, i]
-                dim_size = action_dims[i]
-                one_hot_part = np.eye(dim_size)[action_part_indices]
-                all_one_hot_parts.append(one_hot_part)
-            actions_env = np.concatenate(all_one_hot_parts, axis=2)
-        elif env_action_space.__class__.__name__ == "Discrete":
-            # 单一离散分支做 one-hot
+        # print(env_action_space.__class__.__name__)
+        if env_action_space.__class__.__name__ == "Discrete":
+            # 离散动作做 one-hot 编码
             action_indices = actions.astype(int) 
             if actions.ndim == 3 and actions.shape[-1] == 1:
                 action_indices = action_indices.squeeze(-1)
             num_actions = env_action_space.n
             actions_env = np.eye(num_actions)[action_indices] # One-hot 编码
+            # print(f"actions_env:\ttype={type(actions_env)}, shape={actions_env.shape}, dtype={actions_env.dtype}")
+            # print(f"actions_env[0]:\ttype={type(actions_env[0])}, shape={actions_env[0].shape}, dtype={actions_env[0].dtype}")
         elif env_action_space.__class__.__name__ == "Box":
             # 连续动作直接传递
             actions_env = actions 
@@ -507,7 +573,7 @@ class GMPERunner:
             return
         actor_load_path = str(self.model_dir) + "/actor.pt"
         critic_load_path = str(self.model_dir) + "/critic.pt"
-        
+
         if not os.path.exists(actor_load_path):
             print(f"错误：找不到 Actor 模型文件: {actor_load_path}")
             return
@@ -528,7 +594,6 @@ class GMPERunner:
         """
         处理环境返回的 info 列表 (来自原 BaseRunner，已为 MPGG 简化)。
         提取个体奖励和策略，计算系统平均值
-        这里需要进行大幅修改和重写
 
         Args:
             infos (list): 格式 List[List[Dict]] (n_threads, n_agents)。
@@ -542,7 +607,7 @@ class GMPERunner:
 
         # 确保 infos 结构符合预期
         if not isinstance(infos[0], list) or not isinstance(infos[0][0], dict):
-            print(f"警告：process_infos 收到意外的 infos 格式: {type(infos[0])}")
+            print(f"警告: process_infos 收到意外的 infos 格式: {type(infos[0])}")
             return env_infos
 
         # 收集所有线程和智能体的指标
@@ -579,7 +644,7 @@ class GMPERunner:
 
 
     def log_train(self, train_infos: Dict, total_num_steps: int):
-        """记录训练信息到 TensorBoard (来自原 BaseRunner)。"""
+        """ 记录训练信息到 TensorBoard """
         if self.writter is None: return # 如果未使用 TensorBoard 则跳过
         for key, value in train_infos.items():
             if isinstance(value, (int, float, np.number)):
@@ -587,7 +652,7 @@ class GMPERunner:
 
 
     def log_env(self, env_infos: Dict, total_num_steps: int):
-        """记录环境信息到 TensorBoard (来自原 BaseRunner)。"""
+        """ 记录环境信息到 TensorBoard """
         if self.writter is None: return
         for key, value in env_infos.items():
             if isinstance(value, (int, float, np.number)):
