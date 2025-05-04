@@ -108,207 +108,35 @@ class GR_MAPPOPolicy:
             initial_lr=self.critic_lr,
         )
 
-    def get_actions(
-        self,
-        cent_obs,
-        obs,
-        node_obs,
-        adj,
-        agent_id,
-        share_agent_id,
-        rnn_states_actor,
-        rnn_states_critic,
-        masks,
-        available_actions=None,
-        deterministic=False,
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """
-        Compute actions and value function predictions for the given inputs.
-        cent_obs (np.ndarray):
-            Centralized input to the critic.
-        obs (np.ndarray):
-            Local agent inputs to the actor.
-        node_obs (np.ndarray):
-            Local agent graph node features to the actor.
-        adj (np.ndarray):
-            Adjacency matrix for the graph.
-        agent_id (np.ndarray):
-            Agent id to which observations belong to.
-        share_agent_id (np.ndarray):
-            Agent id to which cent_observations belong to.
-        rnn_states_actor: (np.ndarray)
-            If actor is RNN, RNN states for actor.
-        rnn_states_critic: (np.ndarray)
-            If critic is RNN, RNN states for critic.
-        masks: (np.ndarray)
-            Denotes points at which RNN states should be reset.
-        available_actions: (np.ndarray)
-            Denotes which actions are available to agent
-            (if None, all actions available)
-        deterministic: (bool)
-            Whether the action should be mode of
-            distribution or should be sampled.
+    def get_actions(self, cent_obs, obs, node_obs, adj, agent_id, share_agent_id):
 
-        :return values: (torch.Tensor)
-            value function predictions.
-        :return actions: (torch.Tensor)
-            actions to take.
-        :return action_log_probs: (torch.Tensor)
-            log probabilities of chosen actions.
-        :return rnn_states_actor: (torch.Tensor)
-            updated actor network RNN states.
-        :return rnn_states_critic: (torch.Tensor)
-            updated critic network RNN states.
-        """
-        actions, action_log_probs, rnn_states_actor = self.actor.forward(
-            obs,
-            node_obs,
-            adj,
-            agent_id,
-            rnn_states_actor,
-            masks,
-            available_actions,
-            deterministic,
-        )
+        actions, action_log_probs = self.actor.forward(obs, node_obs, adj, agent_id)
 
-        values, rnn_states_critic = self.critic.forward(
-            cent_obs, node_obs, adj, share_agent_id, rnn_states_critic, masks
-        )
-        return (values, actions, action_log_probs, rnn_states_actor, rnn_states_critic)
+        values = self.critic.forward(cent_obs, node_obs, adj, share_agent_id)
 
-    def get_values(
-        self, cent_obs, node_obs, adj, share_agent_id, rnn_states_critic, masks
-    ) -> Tensor:
-        """
-        Get value function predictions.
-        cent_obs (np.ndarray):
-            centralized input to the critic.
-        node_obs (np.ndarray):
-            Local agent graph node features to the actor.
-        adj (np.ndarray):
-            Adjacency matrix for the graph.
-        share_agent_id (np.ndarray):
-            Agent id to which cent_observations belong to.
-        rnn_states_critic: (np.ndarray)
-            if critic is RNN, RNN states for critic.
-        masks: (np.ndarray)
-            denotes points at which RNN states should be reset.
+        return values, actions, action_log_probs
 
-        :return values: (torch.Tensor) value function predictions.
-        """
-        values, _ = self.critic.forward(
-            cent_obs, node_obs, adj, share_agent_id, rnn_states_critic, masks
-        )
+    
+    def get_values(self, cent_obs, node_obs, adj, share_agent_id):
+        
+        values = self.critic.forward(cent_obs, node_obs, adj, share_agent_id)
+
         return values
 
-    def evaluate_actions(
-        self,
-        cent_obs,
-        obs,
-        node_obs,
-        adj,
-        agent_id,
-        share_agent_id,
-        rnn_states_actor,
-        rnn_states_critic,
-        action,
-        masks,
-        available_actions=None,
-        active_masks=None,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        """
-        Get action logprobs / entropy and
-        value function predictions for actor update.
-        cent_obs (np.ndarray):
-            centralized input to the critic.
-        obs (np.ndarray):
-            local agent inputs to the actor.
-        node_obs (np.ndarray):
-            Local agent graph node features to the actor.
-        adj (np.ndarray):
-            Adjacency matrix for the graph.
-        agent_id (np.ndarray):
-            Agent id for observations
-        share_agent_id (np.ndarray):
-            Agent id for shared observations
-        rnn_states_actor: (np.ndarray)
-            if actor is RNN, RNN states for actor.
-        rnn_states_critic: (np.ndarray)
-            if critic is RNN, RNN states for critic.
-        action: (np.ndarray)
-            actions whose log probabilites and entropy to compute.
-        masks: (np.ndarray)
-            denotes points at which RNN states should be reset.
-        available_actions: (np.ndarray)
-            denotes which actions are available to agent
-            (if None, all actions available)
-        active_masks: (torch.Tensor)
-            denotes whether an agent is active or dead.
+    def evaluate_actions(self, cent_obs, obs, node_obs,adj, agent_id, share_agent_id, action):
 
-        :return values: (torch.Tensor)
-            value function predictions.
-        :return action_log_probs: (torch.Tensor)
-            log probabilities of the input actions.
-        :return dist_entropy: (torch.Tensor)
-            action distribution entropy for the given inputs.
-        """
         action_log_probs, dist_entropy = self.actor.evaluate_actions(
             obs,
             node_obs,
             adj,
             agent_id,
-            rnn_states_actor,
-            action,
-            masks,
-            available_actions,
-            active_masks,
-        )
+            action)
 
-        values, _ = self.critic.forward(
-            cent_obs, node_obs, adj, share_agent_id, rnn_states_critic, masks
-        )
+        values = self.critic.forward(cent_obs, node_obs, adj, share_agent_id)
         return values, action_log_probs, dist_entropy
 
-    def act(
-        self,
-        obs,
-        node_obs,
-        adj,
-        agent_id,
-        rnn_states_actor,
-        masks,
-        available_actions=None,
-        deterministic=False,
-    ) -> Tuple[Tensor, Tensor]:
-        """
-        Compute actions using the given inputs.
-        obs (np.ndarray):
-            local agent inputs to the actor.
-        node_obs (np.ndarray):
-            Local agent graph node features to the actor.
-        adj (np.ndarray):
-            Adjacency matrix for the graph.
-        agent_id (np.ndarray):
-            Agent id for nodes for the graph.
-        rnn_states_actor: (np.ndarray)
-            if actor is RNN, RNN states for actor.
-        masks: (np.ndarray)
-            denotes points at which RNN states should be reset.
-        available_actions: (np.ndarray)
-            denotes which actions are available to agent
-            (if None, all actions available)
-        deterministic: (bool)
-            whether the action should be mode of
-            distribution or should be sampled.
-        """
-        actions, _, rnn_states_actor = self.actor.forward(
-            obs,
-            node_obs,
-            adj,
-            agent_id,
-            rnn_states_actor,
-            masks,
-            available_actions,
-            deterministic,
-        )
-        return actions, rnn_states_actor
+    def act(self,obs,node_obs,adj,agent_id) :
+
+        actions, _ = self.actor.forward(obs, node_obs, adj, agent_id)
+        
+        return actions

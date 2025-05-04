@@ -1,5 +1,5 @@
 import argparse
-from typing import Tuple, List
+from typing import Tuple
 
 import gym
 import torch
@@ -8,7 +8,6 @@ import torch.nn as nn
 from algorithms.utils.util import init, check
 from algorithms.utils.gnn import GNNBase
 from algorithms.utils.mlp import MLPBase
-from algorithms.utils.rnn import RNNLayer
 from algorithms.utils.act import ACTLayer
 from algorithms.utils.popart import PopArt
 from utils.util import get_shape_from_obs_space
@@ -69,86 +68,34 @@ class GR_Actor(nn.Module):
 
         self._gain = args.gain
         self._use_orthogonal = args.use_orthogonal
-        self._use_policy_active_masks = args.use_policy_active_masks
-        self._use_naive_recurrent_policy = args.use_naive_recurrent_policy
-        self._use_recurrent_policy = args.use_recurrent_policy
-        self._recurrent_N = args.recurrent_N
         self.split_batch = split_batch
         self.max_batch_size = max_batch_size
         self.tpdv = dict(dtype=torch.float32, device=device)
 
         obs_shape = get_shape_from_obs_space(obs_space)
-        node_obs_shape = get_shape_from_obs_space(node_obs_space)[
-            1
-        ]  # returns (num_nodes, num_node_feats)
+        node_obs_shape = get_shape_from_obs_space(node_obs_space)[1]  # returns (num_nodes, num_node_feats)
         edge_dim = get_shape_from_obs_space(edge_obs_space)[0]  # returns (edge_dim,)
 
+        # GNN编码节点特征和边特征为向量
         self.gnn_base = GNNBase(args, node_obs_shape, edge_dim, args.actor_graph_aggr)
+
         gnn_out_dim = self.gnn_base.out_dim  # output shape from gnns
         mlp_base_in_dim = gnn_out_dim + obs_shape[0]
-        self.base = MLPBase(args, obs_shape=None, override_obs_dim=mlp_base_in_dim)
 
-        if self._use_naive_recurrent_policy or self._use_recurrent_policy:
-            self.rnn = RNNLayer(
-                self.hidden_size,
-                self.hidden_size,
-                self._recurrent_N,
-                self._use_orthogonal,
-            )
+        # 将GNN输出送入隐藏层
+        self.base = MLPBase(args, input_dim = mlp_base_in_dim)
 
-        self.act = ACTLayer(
-            action_space, self.hidden_size, self._use_orthogonal, self._gain
-        )
+        # 把 MLP 隐藏层输出映射成动作分布参数
+        self.act = ACTLayer(action_space, self.hidden_size, self._use_orthogonal, self._gain)
 
         self.to(device)
 
-    def forward(
-        self,
-        obs,
-        node_obs,
-        adj,
-        agent_id,
-        rnn_states,
-        masks,
-        available_actions=None,
-        deterministic=False,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        """
-        Compute actions from the given inputs.
-        obs: (np.ndarray / torch.Tensor)
-            Observation inputs into network.
-        node_obs (np.ndarray / torch.Tensor):
-            Local agent graph node features to the actor.
-        adj (np.ndarray / torch.Tensor):
-            Adjacency matrix for the graph
-        agent_id (np.ndarray / torch.Tensor)
-            The agent id to which the observation belongs to
-        rnn_states: (np.ndarray / torch.Tensor)
-            If RNN network, hidden states for RNN.
-        masks: (np.ndarray / torch.Tensor)
-            Mask tensor denoting if hidden states
-            should be reinitialized to zeros.
-        available_actions: (np.ndarray / torch.Tensor)
-            Denotes which actions are available to agent
-            (if None, all actions available)
-        deterministic: (bool)
-            Whether to sample from action distribution or return the mode.
+    def forward(self, obs, node_obs, adj, agent_id) :
 
-        :return actions: (torch.Tensor)
-            Actions to take.
-        :return action_log_probs: (torch.Tensor)
-            Log probabilities of taken actions.
-        :return rnn_states: (torch.Tensor)
-            Updated RNN hidden states.
-        """
         obs = check(obs).to(**self.tpdv)
         node_obs = check(node_obs).to(**self.tpdv)
         adj = check(adj).to(**self.tpdv)
         agent_id = check(agent_id).to(**self.tpdv).long()
-        rnn_states = check(rnn_states).to(**self.tpdv)
-        masks = check(masks).to(**self.tpdv)
-        if available_actions is not None:
-            available_actions = check(available_actions).to(**self.tpdv)
 
         # if batch size is big, split into smaller batches, forward pass and then concatenate
         if (self.split_batch) and (obs.shape[0] > self.max_batch_size):
@@ -168,15 +115,13 @@ class GR_Actor(nn.Module):
             actor_features = torch.cat(actor_features, dim=0)
         else:
             nbd_features = self.gnn_base(node_obs, adj, agent_id)
-            actor_features = torch.cat([obs, nbd_features], dim=1)
+            actor_features = torch.cat([obs, nbd_features], dim=1) # 拼接GNN输出与自身观测
             actor_features = self.base(actor_features)
 
-        if self._use_naive_recurrent_policy or self._use_recurrent_policy:
-            actor_features, rnn_states = self.rnn(actor_features, rnn_states, masks)
 
-        actions, action_log_probs = self.act(actor_features, available_actions, deterministic)
+        actions, action_log_probs = self.act(actor_features)
 
-        return (actions, action_log_probs, rnn_states)
+        return actions, action_log_probs
 
     def evaluate_actions(
         self,
@@ -184,11 +129,7 @@ class GR_Actor(nn.Module):
         node_obs,
         adj,
         agent_id,
-        rnn_states,
         action,
-        masks,
-        available_actions=None,
-        active_masks=None,
     ) -> Tuple[Tensor, Tensor]:
         """
         Compute log probability and entropy of given actions.
@@ -222,14 +163,7 @@ class GR_Actor(nn.Module):
         node_obs = check(node_obs).to(**self.tpdv)
         adj = check(adj).to(**self.tpdv)
         agent_id = check(agent_id).to(**self.tpdv)
-        rnn_states = check(rnn_states).to(**self.tpdv)
         action = check(action).to(**self.tpdv)
-        masks = check(masks).to(**self.tpdv)
-        if available_actions is not None:
-            available_actions = check(available_actions).to(**self.tpdv)
-
-        if active_masks is not None:
-            active_masks = check(active_masks).to(**self.tpdv)
 
         # if batch size is big, split into smaller batches, forward pass and then concatenate
         if (self.split_batch) and (obs.shape[0] > self.max_batch_size):
@@ -252,17 +186,10 @@ class GR_Actor(nn.Module):
             actor_features = torch.cat([obs, nbd_features], dim=1)
             actor_features = self.base(actor_features)
 
-        if self._use_naive_recurrent_policy or self._use_recurrent_policy:
-            actor_features, rnn_states = self.rnn(actor_features, rnn_states, masks)
 
-        action_log_probs, dist_entropy = self.act.evaluate_actions(
-            actor_features,
-            action,
-            available_actions,
-            active_masks=active_masks if self._use_policy_active_masks else None,
-        )
+        action_log_probs, dist_entropy = self.act.evaluate_actions(actor_features, action)
 
-        return (action_log_probs, dist_entropy)
+        return action_log_probs, dist_entropy
 
 
 class GR_Critic(nn.Module):
@@ -300,45 +227,28 @@ class GR_Critic(nn.Module):
         self.args = args
         self.hidden_size = args.hidden_size
         self._use_orthogonal = args.use_orthogonal
-        self._use_naive_recurrent_policy = args.use_naive_recurrent_policy
-        self._use_recurrent_policy = args.use_recurrent_policy
-        self._recurrent_N = args.recurrent_N
+
         self._use_popart = args.use_popart
         self.split_batch = split_batch
         self.max_batch_size = max_batch_size
         self.tpdv = dict(dtype=torch.float32, device=device)
-        init_method = [nn.init.xavier_uniform_, nn.init.orthogonal_][
-            self._use_orthogonal
-        ]
+        init_method = [nn.init.xavier_uniform_, nn.init.orthogonal_][self._use_orthogonal]
 
         cent_obs_shape = get_shape_from_obs_space(cent_obs_space)
-        node_obs_shape = get_shape_from_obs_space(node_obs_space)[
-            1
-        ]  # (num_nodes, num_node_feats)
+        node_obs_shape = get_shape_from_obs_space(node_obs_space)[1]  # (num_nodes, num_node_feats)
         edge_dim = get_shape_from_obs_space(edge_obs_space)[0]  # (edge_dim,)
 
-        # TODO modify output of GNN to be some kind of global aggregation
         self.gnn_base = GNNBase(args, node_obs_shape, edge_dim, args.critic_graph_aggr)
         gnn_out_dim = self.gnn_base.out_dim
         # if node aggregation, then concatenate aggregated node features for all agents
         # otherwise, the aggregation is done for the whole graph
-        if args.critic_graph_aggr == "node":
-            gnn_out_dim *= args.num_agents
+        
         mlp_base_in_dim = gnn_out_dim
+        
         if self.args.use_cent_obs:
             mlp_base_in_dim += cent_obs_shape[0]
 
-        self.base = MLPBase(args, cent_obs_shape, override_obs_dim=mlp_base_in_dim)
-        
-
-
-        if self._use_naive_recurrent_policy or self._use_recurrent_policy:
-            self.rnn = RNNLayer(
-                self.hidden_size,
-                self.hidden_size,
-                self._recurrent_N,
-                self._use_orthogonal,
-            )
+        self.base = MLPBase(args, input_dim = mlp_base_in_dim)
 
         def init_(m):
             return init(m, init_method, lambda x: nn.init.constant_(x, 0))
@@ -350,65 +260,69 @@ class GR_Critic(nn.Module):
 
         self.to(device)
 
-    def forward(
-        self, cent_obs, node_obs, adj, agent_id, rnn_states, masks
-    ) -> Tuple[Tensor, Tensor]:
+    def forward(self, cent_obs, node_obs, adj, agent_id):
         """
-        Compute actions from the given inputs.
-        cent_obs: (np.ndarray / torch.Tensor)
-            Observation inputs into network.
-        node_obs (np.ndarray):
-            Local agent graph node features to the actor.
-        adj (np.ndarray):
-            Adjacency matrix for the graph.
-        agent_id (np.ndarray / torch.Tensor)
-            The agent id to which the observation belongs to
-        rnn_states: (np.ndarray / torch.Tensor)
-            If RNN network, hidden states for RNN.
-        masks: (np.ndarray / torch.Tensor)
-            Mask tensor denoting if RNN states
-            should be reinitialized to zeros.
-
-        :return values: (torch.Tensor) value function predictions.
-        :return rnn_states: (torch.Tensor) updated RNN hidden states.
+        前向计算 Critic 的价值预测，兼容 node/global 两种聚合模式，并原地处理拆分小批次：
+        - node 模式下 GNNBase 返回 [B,N,d]，按 agent_id 挑出 [B,d]
+        - global 模式下 GNNBase 返回 [B,d]
+        - （可选）拼接集中式观测 [B,C] → [B,C+d]
+        - 过 MLPBase → 过输出层 → [B,1]
+        - 若 split_batch=True 且 B > max_batch_size，会拆成多个子批次分别处理。
         """
-        cent_obs = check(cent_obs).to(**self.tpdv)
-        node_obs = check(node_obs).to(**self.tpdv)
-        adj = check(adj).to(**self.tpdv)
-        agent_id = check(agent_id).to(**self.tpdv).long()
-        rnn_states = check(rnn_states).to(**self.tpdv)
-        masks = check(masks).to(**self.tpdv)
+        # 1. 转 tensor 并移动到 device
+        cent_obs = check(cent_obs).to(**self.tpdv)   # [B, C]
+        node_obs = check(node_obs).to(**self.tpdv)   # [B, N, D_node]
+        adj      = check(adj).to(**self.tpdv)        # [B, N, N]
+        agent_id = check(agent_id).to(**self.tpdv).long()  # [B] 或 [B,1]
 
-        # if batch size is big, split into smaller batches, forward pass and then concatenate
-        if (self.split_batch) and (cent_obs.shape[0] > self.max_batch_size):
-            # print(f'Cent obs: {cent_obs.shape[0]}')
-            batchGenerator = minibatchGenerator(
-                cent_obs, node_obs, adj, agent_id, self.max_batch_size
-            )
-            critic_features = []
-            for batch in batchGenerator:
-                obs_batch, node_obs_batch, adj_batch, agent_id_batch = batch
-                nbd_feats_batch = self.gnn_base(
-                    node_obs_batch, adj_batch, agent_id_batch
-                )
-                act_feats_batch = torch.cat([obs_batch, nbd_feats_batch], dim=1)
-                critic_feats_batch = self.base(act_feats_batch)
-                critic_features.append(critic_feats_batch)
-            critic_features = torch.cat(critic_features, dim=0)
+        B = cent_obs.shape[0]
+
+        # 2. 如果要拆小批次
+        if self.split_batch and B > self.max_batch_size:
+            critic_feats_list = []
+            # minibatchGenerator 会返回若干 (obs_b, node_obs_b, adj_b, aid_b) 四元组
+            for obs_b, node_obs_b, adj_b, aid_b in minibatchGenerator(
+                    cent_obs, node_obs, adj, agent_id, self.max_batch_size):
+                # 2.1 GNNBase 编码
+                feats = self.gnn_base(node_obs_b, adj_b, aid_b)
+                # 2.2 node 模式下：feats 可能是 [b,N,d]，索引取出 [b,d]
+                if feats.dim() == 3:
+                    b, N, d = feats.shape
+                    idx = torch.arange(b, device=feats.device)
+                    # aid_b 可能是 [b,1] 或 [b]
+                    aid = agent_id[:, 0]
+                    feats = feats[idx, aid, :]  # 取出对应行 => [b,d]
+                # 2.3 拼接集中式观测（若启用）
+                if self.args.use_cent_obs:
+                    inp = torch.cat([obs_b, feats], dim=1)  # [b, C+d]
+                else:
+                    inp = feats                             # [b, d]
+                # 2.4 过 MLPBase => [b, hidden_size]
+                critic_feats_list.append(self.base(inp))
+            # 2.5 拼回完整输出 => [B, hidden_size]
+            critic_features = torch.cat(critic_feats_list, dim=0)
         else:
-            nbd_features = self.gnn_base(
-                node_obs, adj, agent_id
-            )  # CHECK from where are these agent_ids coming
+            # 3.1 一次性前向
+            feats = self.gnn_base(node_obs, adj, agent_id)  # global->[B,d] or node->[B,N,d]
+            # print(f"[DEBUG] GNNBase('{self.args.critic_graph_aggr}') 输出形状 = {feats.shape}")
+            # 3.2 node 模式下挑行
+            if feats.dim() == 3:
+                b, N, d = feats.shape
+                idx = torch.arange(b, device=feats.device)
+                aid = agent_id[:, 0]
+                feats = feats[idx, aid, :]  # => [B, d]
+                # print(f"[DEBUG] GNNBase('{self.args.critic_graph_aggr}') 输出形状 = {feats.shape}")
+            # 3.3 拼接集中式观测（若启用）
             if self.args.use_cent_obs:
-                critic_features = torch.cat(
-                    [cent_obs, nbd_features], dim=1
-                )  # NOTE can remove concatenation with cent_obs and just use graph_feats
+                inp = torch.cat([cent_obs, feats], dim=1)  # [B, C+d]
             else:
-                critic_features = nbd_features
-            critic_features = self.base(critic_features)  # Cent obs here
+                inp = feats                               # [B, d]
+            # 3.4 过 MLPBase => [B, hidden_size]
+            critic_features = self.base(inp)
 
-        if self._use_naive_recurrent_policy or self._use_recurrent_policy:
-            critic_features, rnn_states = self.rnn(critic_features, rnn_states, masks)
+        # 4. 最后过输出层 => [B,1]
         values = self.v_out(critic_features)
+        return values
 
-        return (values, rnn_states)
+
+

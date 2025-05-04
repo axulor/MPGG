@@ -40,15 +40,12 @@ class GR_MAPPO():
         self.max_grad_norm = args.max_grad_norm       
         self.huber_delta = args.huber_delta
 
-        self._use_recurrent_policy = args.use_recurrent_policy
-        self._use_naive_recurrent = args.use_naive_recurrent_policy
         self._use_max_grad_norm = args.use_max_grad_norm
         self._use_clipped_value_loss = args.use_clipped_value_loss
         self._use_huber_loss = args.use_huber_loss
         self._use_popart = args.use_popart
         self._use_valuenorm = args.use_valuenorm
-        self._use_value_active_masks = args.use_value_active_masks
-        self._use_policy_active_masks = args.use_policy_active_masks
+
         self.scaler = amp.GradScaler() 
         assert (self._use_popart and self._use_valuenorm) == False, ("self._use_popart and self._use_valuenorm can not be set True simultaneously")
         
@@ -62,8 +59,7 @@ class GR_MAPPO():
     def cal_value_loss(self, 
                     values:Tensor, 
                     value_preds_batch:Tensor, 
-                    return_batch:Tensor, 
-                    active_masks_batch:Tensor) -> Tensor:
+                    return_batch:Tensor) -> Tensor:
         """
         计算价值网络的损失。
         - values: 当前网络对状态值 V(s) 的预测, shape=(batch,1) 或 (batch,)
@@ -98,10 +94,9 @@ class GR_MAPPO():
         else:
             value_loss = value_loss_original
 
-        if self._use_value_active_masks:
-            value_loss = (value_loss * active_masks_batch).sum() / active_masks_batch.sum()
-        else:
-            value_loss = value_loss.mean()
+
+
+        value_loss = value_loss.mean()
 
         return value_loss
     
@@ -125,16 +120,14 @@ class GR_MAPPO():
         critic_backward_time Critic 反向传播耗时
         """
         share_obs_batch, obs_batch, node_obs_batch, adj_batch, agent_id_batch, \
-        share_agent_id_batch, rnn_states_batch, rnn_states_critic_batch, \
-        actions_batch, value_preds_batch, return_batch, masks_batch, \
-        active_masks_batch,old_action_log_probs_batch, adv_targ, \
-        available_actions_batch = sample
+        share_agent_id_batch, \
+        actions_batch, value_preds_batch, return_batch, \
+        old_action_log_probs_batch, adv_targ = sample
 
         old_action_log_probs_batch = check(old_action_log_probs_batch).to(**self.tpdv)
         adv_targ = check(adv_targ).to(**self.tpdv)
         value_preds_batch = check(value_preds_batch).to(**self.tpdv)
         return_batch = check(return_batch).to(**self.tpdv)
-        active_masks_batch = check(active_masks_batch).to(**self.tpdv)
         # print("MaPPO", active_masks_batch.T)
         # Reshape to do in a single forward pass for all steps
         values, action_log_probs, dist_entropy = self.policy.evaluate_actions(
@@ -144,12 +137,7 @@ class GR_MAPPO():
                                                         adj_batch,
                                                         agent_id_batch,
                                                         share_agent_id_batch,
-                                                        rnn_states_batch, 
-                                                        rnn_states_critic_batch, 
-                                                        actions_batch, 
-                                                        masks_batch, 
-                                                        available_actions_batch,
-                                                        active_masks_batch)
+                                                        actions_batch)
         # actor update
         # print(f'obs: {obs_batch.shape}')
         # st = time.time()
@@ -160,14 +148,8 @@ class GR_MAPPO():
                             1.0 + self.clip_param) * adv_targ
         # print(f'Surr1: {surr1.shape} \t Values: {values.shape}')
 
-        if self._use_policy_active_masks:
-            policy_action_loss = (
-                                -torch.sum(torch.min(surr1, surr2), dim=-1,
-                                keepdim=True) * active_masks_batch
-                                ).sum() / active_masks_batch.sum()
-        else:
-            policy_action_loss = -torch.sum(torch.min(surr1, surr2), 
-                                            dim=-1, keepdim=True).mean()
+
+        policy_action_loss = -torch.sum(torch.min(surr1, surr2), dim=-1, keepdim=True).mean()
 
         policy_loss = policy_action_loss
 
@@ -198,8 +180,7 @@ class GR_MAPPO():
         # print(values.shape, value_preds_batch.shape)
         value_loss = self.cal_value_loss(values, 
                                         value_preds_batch, 
-                                        return_batch, 
-                                        active_masks_batch)
+                                        return_batch)
 
         self.policy.critic_optimizer.zero_grad()
         # print(f'Critic Zero grad time: {time.time() - st}')
@@ -267,16 +248,9 @@ class GR_MAPPO():
 
         for _ in range(self.ppo_epoch):
             st = time.time()
-            if self._use_recurrent_policy:
-                data_generator = buffer.recurrent_generator(advantages, 
-                                                        self.num_mini_batch, 
-                                                        self.data_chunk_length)
-            elif self._use_naive_recurrent:
-                data_generator = buffer.naive_recurrent_generator(advantages, 
-                                                            self.num_mini_batch)
-            else:
-                data_generator = buffer.feed_forward_generator(advantages, 
-                                                            self.num_mini_batch)
+
+
+            data_generator = buffer.feed_forward_generator(advantages, self.num_mini_batch)
             
             # actor_backward_time, critic_backward_time = 0, 0 
 

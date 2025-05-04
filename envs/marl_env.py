@@ -89,7 +89,6 @@ class MultiAgentGraphEnv(gym.Env):
 
         # -- 3. 初始化环境状态 --
         self.current_step = 0 # Gym 环境的步数计数器 (从 reset 开始)
-        self.current_time = 0 # 世界内部的时间步 (可能与 Gym step 不同，但这里保持一致)
 
         # -- 4. 图和距离相关属性 --
         self.edge_list = None       # 边列表 (2, E)
@@ -170,7 +169,6 @@ class MultiAgentGraphEnv(gym.Env):
             - adj_n: 每个智能体的初始邻接矩阵观察列表
         """
         self.current_step = 0
-        self.current_time = 0
 
         # --- 重置智能体状态 ---
         shuffled_agents = list(self.agents) # 创建副本以进行 shuffle
@@ -224,31 +222,27 @@ class MultiAgentGraphEnv(gym.Env):
 
         Returns:
             A tuple containing:
-            - obs_n: 每个智能体的局部观察列表。
-            - agent_id_n: 每个智能体的ID列表。
-            - node_obs_n: 每个智能体的节点特征观察列表。
-            - adj_n: 每个智能体的邻接矩阵观察列表。
-            - reward_n: 每个智能体的奖励列表。
-            - done_n: 每个智能体的完成状态列表。
-            - info_n: 每个智能体的额外信息字典列表。
+            - obs_n     :   每个智能体的局部观察列表
+            - agent_id_n:   每个智能体的ID列表
+            - node_obs_n:   每个智能体的节点特征观察列表
+            - adj_n     :   每个智能体的邻接矩阵观察列表
+            - reward_n  :   每个智能体的奖励列表
+            - done_n    :   每个智能体的完成状态列表
+            - info_n    :   每个智能体的额外信息字典列表
         """
         self.current_step += 1
-        self.current_time += 1 # 更新内部时间
 
         # -- 1. 为每个智能体设置动作 --
         for i, agent in enumerate(self.agents):
             self._set_action(action_n[i], agent, self.action_space[i])
 
-        # -- 2. 更新智能体位置 (物理引擎) --
+        # -- 2. 更新智能体位置  --
         for agent in self.agents:
-            # 动作决定速度变化或直接是速度向量 (取决于场景设计，这里假设动作为速度)
-            # 如果动作是施加力，则需要更新速度 agent.vel += agent.action
-            # 如果动作是直接设置速度方向/大小
             if self.discrete_action:
-                # agent.action 是方向向量 [dx, dy] 或 [0, 0]
+                # 离散动作
                  agent.vel = agent.action * self.speed # 将方向动作转换为速度
             else:
-                # 连续动作通常直接控制速度或力，这里假设控制速度
+                # 连续动作
                  agent.vel = agent.action * self.speed # 假设 action 是 [-1,1] 的方向/比例
 
             # 应用速度更新位置
@@ -284,6 +278,31 @@ class MultiAgentGraphEnv(gym.Env):
         # 检查是否达到最大步数，如果是则所有智能体都完成
         if self.current_step >= self.max_cycles:
             done_n = [True] * self.num_agents
+
+        # print(f"obs_n:\ttype={type(obs_n)}, length={len(obs_n)}")
+        # print(f"obs_n[0]:\ttype={type(obs_n[0])}, shape={obs_n[0].shape}, dtype={obs_n[0].dtype}")
+
+        # print(f"agent_id_n:\ttype={type(agent_id_n)}, length={len(agent_id_n)}")
+        # print(f"agent_id_n[0]:\ttype={type(agent_id_n[0])}, shape={agent_id_n[0].shape}, dtype={agent_id_n[0].dtype}")
+
+        # print(f"node_obs_n:\ttype={type(node_obs_n)}, length={len(node_obs_n)}")
+        # print(f"node_obs_n[0]:\ttype={type(node_obs_n[0])}, shape={node_obs_n[0].shape}, dtype={node_obs_n[0].dtype}")
+
+        # print(f"adj_n:\ttype={type(adj_n)}, length={len(adj_n)}")
+        # print(f"adj_n[0]:\ttype={type(adj_n[0])}, shape={adj_n[0].shape}, dtype={adj_n[0].dtype}")
+
+        # print(f"reward_n:\ttype={type(reward_n)}, length={len(reward_n)}")
+        # print(f"reward_n[0]:\ttype={type(reward_n[0])}, shape={reward_n[0].shape}, dtype={reward_n[0].dtype}")
+
+        # print(f"reward_n:\ttype={type(reward_n)}, length={len(reward_n)}")
+        # print(f"reward_n[0]:\ttype={type(reward_n[0])}, shape={reward_n[0].shape}, dtype={reward_n[0].dtype}")
+
+        # print(f"done_n:\ttype={type(done_n)}, length={len(done_n)}")
+        # print(f"done_n[0]:\ttype={type(done_n[0])}")
+
+        
+        # print(f"info_n:\ttype={type(info_n)}, length={len(info_n)}")
+        # print(f"info_n[0]:\ttype={type(info_n[0])}")
 
         return obs_n, agent_id_n, node_obs_n, adj_n, reward_n, done_n, info_n
 
@@ -431,7 +450,7 @@ class MultiAgentGraphEnv(gym.Env):
         last_payoff = agent.last_payoff
         
         # --- 兼容性设置 ---
-        entity_type_id = 0 # 0 代表 Agent 类型
+        # entity_type_id = 0 # 0 代表 Agent 类型
         # -----------
 
         features = np.hstack([
@@ -439,7 +458,7 @@ class MultiAgentGraphEnv(gym.Env):
             vel.flatten(),              # 速度 (2,)
             strategy.flatten(),         # 策略(1,)
             last_payoff.flatten(),      # 收益(1,)
-            np.array([entity_type_id], dtype=np.float32) # 类型ID(1,) 
+            # np.array([entity_type_id], dtype=np.float32) # 类型ID(1,) 
         ]).astype(np.float32)       # 总维度变为 7
 
         # TODO 返回值检查

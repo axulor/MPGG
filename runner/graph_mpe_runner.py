@@ -128,14 +128,14 @@ class GMPERunner:
             # --- Rollout：注意 episode_length 仅仅是数据收集和网络更新的周期 ---
             for step in range(self.episode_length):
                 # 1. 采样
-                values, actions, action_log_probs, rnn_states, rnn_states_critic, actions_env = self.collect(step)
+                values, actions, action_log_probs, actions_env = self.collect(step)
                 # 2. 交互
                 obs, agent_id, node_obs, adj, rewards, dones, infos = self.envs.step(actions_env)
                 # 3. 将数据插入 Buffer
                 data = (obs, agent_id, node_obs, adj,
                         rewards, dones, infos,
                         values, actions, action_log_probs,
-                        rnn_states, rnn_states_critic)
+                        )
                 self.insert(data)
 
             # --- 计算回报和优势 ---
@@ -272,22 +272,14 @@ class GMPERunner:
         agent_id_batch = np.concatenate(self.buffer.agent_id[step])
         share_agent_id_batch = np.concatenate(self.buffer.share_agent_id[step])
 
-        rnn_states_actor_batch = np.concatenate(self.buffer.rnn_states[step])
-        rnn_states_critic_batch = np.concatenate(self.buffer.rnn_states_critic[step])
-        masks_batch = np.concatenate(self.buffer.masks[step])
-
         # --- 调用策略网络 ---
-        value, action, action_log_prob, rnn_states, rnn_states_critic = self.trainer.policy.get_actions(
+        value, action, action_log_prob = self.trainer.policy.get_actions(
             share_obs_batch,    
             obs_batch,
             node_obs_batch,
             adj_batch,
             agent_id_batch,     
             share_agent_id_batch,
-            rnn_states_actor_batch,
-            rnn_states_critic_batch,
-            masks_batch,
-            deterministic=False # 训练时采样
         )
 
         # print(f"value:\ttype={type(value)}, shape={value.shape}, dtype={value.dtype}")
@@ -334,9 +326,6 @@ class GMPERunner:
         # print(f"Agent {i} → value={v:.4f}, action={a}, log_prob={lp:.4f}")
 
 
-        rnn_states = np.array(np.split(_t2n(rnn_states), self.n_rollout_threads))
-        rnn_states_critic = np.array(np.split(_t2n(rnn_states_critic), self.n_rollout_threads))
-
         # --- 转换动作为环境格式 ---
         actions_env = None
         env_action_space = self.envs.action_space[0]
@@ -357,7 +346,7 @@ class GMPERunner:
             print(f"错误: collect 中遇到未知的动作空间类型 {env_action_space.__class__.__name__}")
             raise NotImplementedError
 
-        return values, actions, action_log_probs, rnn_states, rnn_states_critic, actions_env
+        return values, actions, action_log_probs, actions_env
 
 
     def insert(self, data: Tuple):
@@ -372,8 +361,7 @@ class GMPERunner:
         # 解包数据
         (   obs, agent_id, node_obs, adj,
             rewards, dones, infos,
-            values, actions, action_log_probs,
-            rnn_states, rnn_states_critic,
+            values, actions, action_log_probs
         ) = data
 
         # TODO --- 处理 Masks ---
@@ -400,19 +388,16 @@ class GMPERunner:
             adj,                # 下一步邻接矩阵
             agent_id,           # 下一步智能体 ID
             share_agent_id,     # 下一步共享 ID
-            rnn_states,         # *上一步* Actor RNN 输出 (作为下一步输入)
-            rnn_states_critic,  # *上一步* Critic RNN 输出 (作为下一步输入)
             actions,            # *上一步* 动作
             action_log_probs,   # *上一步* 动作 logp
             values,             # *上一步* 价值估计
             rewards,            # 当前步奖励
-            masks               # 当前步 Mask (1 if not done else 0)
         )
 
 
     @torch.no_grad() # 不计算梯度
     def compute(self):
-        """计算 GAE 回报和优势 (来自原 GMPERunner)。"""
+        """计算 GAE 回报和优势 """
         self.trainer.prep_rollout() # 设置网络为评估模式
         # 获取 Buffer 中最后一步状态的价值估计
         next_values = self.trainer.policy.get_values(
@@ -420,8 +405,6 @@ class GMPERunner:
             np.concatenate(self.buffer.node_obs[-1]),
             np.concatenate(self.buffer.adj[-1]),
             np.concatenate(self.buffer.share_agent_id[-1]),
-            np.concatenate(self.buffer.rnn_states_critic[-1]),
-            np.concatenate(self.buffer.masks[-1]),
         )
         next_values = np.array(np.split(_t2n(next_values), self.n_rollout_threads))
         # 调用 Buffer 计算 returns

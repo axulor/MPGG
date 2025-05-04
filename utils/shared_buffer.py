@@ -703,8 +703,3 @@ class SharedReplayBuffer(object):
 
             yield share_obs_batch, obs_batch, rnn_states_batch, rnn_states_critic_batch, actions_batch, value_preds_batch, return_batch, masks_batch, active_masks_batch, old_action_log_probs_batch, adv_targ, available_actions_batch
 
-
-def create_generator():
-    mylist = range(3)
-    for i in mylist:
-        yield i * i
