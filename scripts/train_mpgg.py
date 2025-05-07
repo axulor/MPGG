@@ -25,7 +25,7 @@ sys.path.append(project_root)
 
 # 明确导入所需模块
 from envs.marl_env import MultiAgentGraphEnv # 导入 MPGG 环境类
-from envs.env_wrappers import GraphDummyVecEnv # 使用单线程环境包装器
+from envs.env_wrappers import GraphDummyVecEnv, GraphSubprocVecEnv # 导入两种 VecEnv 环境包装器
 from runner.graph_mpe_runner import GMPERunner as Runner # 导入图环境 Runner
 from utils.util import print_box, print_args # 打印工具
 
@@ -37,10 +37,6 @@ from utils.util import print_box, print_args # 打印工具
 all_args = SimpleNamespace(
     # --- 实验标识与基本设置 ---
     env_name="GraphMPE",            # 环境名称 (固定为我们使用的图环境接口)
-    scenario_name="mpgg_graph",     # 场景名称 (对应我们的 MPGG 实现)
-    algorithm_name="rmappo",        # 使用的算法
-    experiment_name="win_check_optimized", # 优化后的实验名称
-    project_name="win_local",       # 项目名 (用于本地路径)
     user_name="local",              # 用户名 (用于本地路径)
     seed=1,                         # 随机种子
     cuda=True,                      # 尝试使用 GPU
@@ -48,120 +44,92 @@ all_args = SimpleNamespace(
     n_training_threads=2,           # PyTorch 训练线程数
     n_rollout_threads=1,            # 并行环境数 (固定为 1)
     n_eval_rollout_threads=1,       # 评估环境数 (固定为 1)
-    n_render_rollout_threads=1,     # 渲染环境数 (即使不用也要定义，base_runner 需要)
-    num_env_steps=20000,            # 总训练环境步数
-    use_wandb=False,                # 禁用 wandb
+    num_env_steps=1000000,            # 总训练环境步数
     verbose=True,                   # 启用详细信息打印
 
     # --- 环境特定参数 (MPGG) ---
     # 确保这些参数与 MultiAgentGraphEnv 初始化和内部逻辑一致
     num_agents=100,                 # 智能体数量
-    world_size=100.0,             # MPGG 世界大小
-    speed=1.0,                    # MPGG 智能体移动速度
-    radius=10.0,                  # MPGG 交互半径
+    world_size=20.0,             # MPGG 世界大小
+    speed=0.1,                    # MPGG 智能体移动速度
+    radius=2.0,                  # MPGG 交互半径
     cost=1.0,                     # MPGG 合作成本
-    r=3.0,                        # MPGG PGG 乘数因子 (示例值)
-    beta=0.5,                     # MPGG Fermi 噪声参数 (示例值)
-    max_cycles=25,                # MPGG 环境最大步数
+    r=4.0,                        # MPGG PGG 乘数因子 (示例值)
+    beta=1.0,                     # MPGG Fermi 噪声参数 (示例值)
+    max_cycles=500,                # MPGG 环境最大步数
     discrete_action = False,      # 默认为连续动作
     episode_length=50,           # Replay Buffer 中存储的时序轨迹的长度  
-    # --- 其他场景兼容参数 (设为 MPGG 的合理值或 0) ---
-    num_obstacles=0,              # MPGG 无障碍物
-    num_scripted_agents=0,        # MPGG 无脚本智能体
-    num_landmarks=0,              # MPGG 无地标
-    collaborative=True,           # 假设是协作任务目标
-    max_speed=1.0,                # 与 MPGG speed 一致
+
 
     # === Replay Buffer / Rollout 参数 ===
-    data_chunk_length=10,         # RNN 训练时的数据块长度
 
     # === 网络结构与特性 ===
     share_policy=True,              # 智能体共享策略网络
     use_centralized_V=True,         # 使用中心化 Critic (CTDE)
-    hidden_size=64,                 # Actor/Critic MLP/RNN 隐藏层维度
-    layer_N=1,                      # Actor/Critic MLP/RNN 层数
+    hidden_size=64,                 # Actor/Critic MLP 隐藏层维度
+    layer_N=1,                      # Actor/Critic MLP 层数
     use_ReLU=True,                  # 使用 ReLU 激活函数
     use_orthogonal=True,            # 使用正交初始化
     gain=0.01,                      # 正交初始化增益
     use_feature_normalization=True, # 输入特征使用 LayerNorm
-    use_popart=True,                # 修正: 不使用 PopArt
-    use_valuenorm=False,            # 修正: 使用 ValueNorm
-    stacked_frames=1,               # 通常 GNN 不需要手动堆叠帧
-    # use_stacked_frames=False,
-    split_batch=False,              # 是否在前向传播时拆分大 batch
-    max_batch_size=32,              # 拆分 batch 的大小 (如果 split_batch=True)
+    use_popart=True,                # 修正: 使用 PopArt
+    use_valuenorm=False,            # 修正: 不使用 ValueNorm
+    split_batch=True,               # 是否在前向传播时拆分大 batch
+    max_batch_size=1024,              # 拆分 batch 的大小 (如果 split_batch=True)
 
     # === GNN 相关参数 ===
-    use_gnn_policy=True,          # 策略网络使用 GNN
-    gnn_hidden_size=64,           # GNN 隐藏层维度
-    gnn_num_heads=4,              # GNN Transformer 注意力头数
-    gnn_concat_heads=True,        # GNN 是否拼接注意力头输出
-    gnn_layer_N=2,                # GNN 层数
-    gnn_use_ReLU=True,            # GNN 层是否使用 ReLU
-    num_embeddings=1,             # **关键:** MPGG 只有 Agent 一种实体类型
-    embedding_size=32,            # 实体类型嵌入维度
-    embed_hidden_size=64,         # Embedding 后 MLP 隐藏层大小
-    embed_layer_N=1,              # Embedding 后 MLP 层数
-    embed_use_ReLU=True,          # Embedding 后 MLP 是否用 ReLU
-    embed_add_self_loop=True,     # GNN 是否添加自环
-    max_edge_dist=10.0,           # **关键:** GNN 构建边的最大距离 (应等于 MPGG radius)
-    graph_feat_type="relative",   # GNN 节点特征类型 (来自原始可运行配置)
-    actor_graph_aggr="node",      # Actor GNN 聚合方式 (来自原始可运行配置)
-    critic_graph_aggr="global",   # **关键修正:** Critic 使用全局聚合
-    global_aggr_type="mean",      # 指定全局聚合类型
-    use_cent_obs=True,            # Critic MLP 是否额外接收中心化观测
+    use_gnn_policy=True,            # 策略网络使用 GNN
+    gnn_hidden_size=64,             # GNN 隐藏层维度
+    gnn_num_heads=4,                # GNN Transformer 注意力头数
+    gnn_concat_heads=True,          # GNN 是否拼接注意力头输出
+    gnn_layer_N=2,                  # GNN 层数
+    gnn_use_ReLU=True,              # GNN 层是否使用 ReLU
+    embed_hidden_size=64,           # Embedding 后 MLP 隐藏层大小
+    embed_layer_N=1,                # Embedding 后 MLP 层数
+    embed_use_ReLU=True,            # Embedding 后 MLP 是否用 ReLU
+    embed_add_self_loop=True,       # GNN 是否添加自环
+    max_edge_dist=2.0,              # 关键: GNN 构建边的最大距离 (应等于 MPGG radius)
+    graph_feat_type="relative",     # GNN 节点特征类型 (来自原始可运行配置)
+    actor_graph_aggr="node",        # Actor GNN 聚合方式 (来自原始可运行配置)
+    critic_graph_aggr="global",     # 关键修正: Critic 使用全局聚合
+    global_aggr_type="mean",        # 指定全局聚合类型
+    use_cent_obs=True,              # Critic MLP 是否额外接收中心化观测
 
-    # === 循环策略 (RNN) ===
-    use_recurrent_policy=False,   # **修正:** 不使用标准 GRU/LSTM
-    use_naive_recurrent_policy=True, # **修正:** 使用 Naive RNN (RMAPPO 需求)
-    recurrent_N=1,                # RNN 层数 (Naive RNN 可能不直接用)
 
     # === PPO 算法参数 ===
-    ppo_epoch=10,                 # PPO 更新迭代次数
-    num_mini_batch=4,             # Mini-batch 数量 (1 表示不拆分)
-    entropy_coef=0.01,            # 熵正则化系数
-    value_loss_coef=1.0,          # 值函数损失系数
-    lr=7e-4,                      # Actor 学习率
-    critic_lr=7e-4,               # Critic 学习率
-    clip_param=0.2,               # PPO 裁剪范围
-    opti_eps=1e-5,                # Adam/RMSprop epsilon
-    max_grad_norm=10.0,           # 最大梯度范数
-    use_max_grad_norm=True,       # 启用梯度裁剪
-    use_clipped_value_loss=True,  # 启用裁剪的值损失
-    use_gae=True,                 # 启用 GAE
-    gamma=0.99,                   # 折扣因子
-    gae_lambda=0.95,              # GAE lambda 参数
-    use_proper_time_limits=False, # GAE 是否考虑 episode 结束
-    use_huber_loss=False,         # 不使用 Huber Loss
-    use_value_active_masks=False,  # 在值损失中屏蔽 padding 数据
-    use_policy_active_masks=False, # 在策略损失中屏蔽 padding 数据
-    huber_delta=10.0,             # Huber loss delta (如果使用)
-    weight_decay=0,               # 权重衰减
+    ppo_epoch=10,                   # PPO 更新迭代次数
+    num_mini_batch=64,              # Mini-batch 数量 (1 表示不拆分)
+    entropy_coef=0.01,              # 熵正则化系数
+    value_loss_coef=1.0,            # 值函数损失系数
+    lr=7e-4,                        # Actor 学习率
+    critic_lr=7e-4,                 # Critic 学习率
+    clip_param=0.2,                 # PPO 裁剪范围
+    opti_eps=1e-5,                  # Adam/RMSprop epsilon
+    max_grad_norm=10.0,             # 最大梯度范数
+    use_max_grad_norm=True,         # 启用梯度裁剪
+    use_clipped_value_loss=True,    # 启用裁剪的值损失
+    use_gae=True,                   # 启用 GAE
+    gamma=0.99,                     # 折扣因子
+    gae_lambda=0.95,                # GAE lambda 参数
+    use_proper_time_limits=False,   # GAE 是否考虑 episode 结束
+    use_huber_loss=False,           # 不使用 Huber Loss
+    huber_delta=10.0,               # Huber loss delta (如果使用)
+    weight_decay=0,                 # 权重衰减
 
     # === 运行参数 ===
-    use_linear_lr_decay=True,    # 不使用学习率线性衰减
+    use_linear_lr_decay=True,       # 不使用学习率线性衰减
 
     # === 保存与日志 ===
-    save_interval=50,             # 模型保存频率 (按训练次数或回合数，取决于 runner 实现)
-    log_interval=5,               # 日志打印频率 (按训练次数或回合数)
+    save_interval=100,               # 模型保存频率 (按训练次数或回合数，取决于 runner 实现)
+    log_interval=10,                 # 日志打印频率 (按训练次数或回合数)
 
     # === 评估参数 ===
-    use_eval=True,                # 启用周期性评估
-    eval_interval=20,             # 评估频率 (按训练次数或回合数)
-    eval_episodes=32,             # 每次评估运行的回合数
+    use_eval=True,                  # 启用周期性评估
+    eval_interval=20,               # 评估频率 (按训练次数或回合数)
+    eval_episodes=32,               # 每次评估运行的回合数
 
-    # === 渲染参数 (禁用) ===
-    save_gifs=False,
-    use_render=False,
-    render_episodes=5,
-    ifi=0.1,
-    render_eval=False,
-
-    # === 预训练模型 ===
-    model_dir = None,               # 不加载预训练模型
-
-    # === 其他兼容性参数 ===
-    use_obs_instead_of_state=False # Critic 是否用 obs 代替 state (通常 False for MAPPO)
+    # === 是否加载预训练模型 ===
+    model_dir = None,               #
 )
 
 # ==============================================================================
@@ -169,28 +137,45 @@ all_args = SimpleNamespace(
 # ==============================================================================
 
 def make_train_env(all_args: SimpleNamespace):
-    """创建单线程训练环境。"""
-    def get_env_fn():
-        """内部函数，用于延迟创建环境实例。"""
-        print(f"  (环境初始化) 使用种子: {all_args.seed}")
-        env = MultiAgentGraphEnv(all_args)  # 实例化环境
-        env.seed(all_args.seed)             # 设置环境种子
-        return env
-    # 将创建函数包装在列表中传递给 DummyVecEnv
-    return GraphDummyVecEnv([get_env_fn])
+    """创建训练环境，根据 n_rollout_threads 决定使用 DummyVecEnv 或 SubprocVecEnv。"""
+    print(f"[DEBUG make_train_env] n_rollout_threads: {all_args.n_rollout_threads}")
+    def get_env_fn(rank: int): # rank 用于为每个并行环境设置不同种子
+        """内部函数，返回一个创建单个环境实例的函数。"""
+        def init_env():
+            # rank 用于确保每个并行环境有不同的初始状态或随机性
+            current_seed = all_args.seed + rank * 1000
+            print(f"  (训练环境初始化 rank {rank}) 使用种子: {current_seed}")
+            env = MultiAgentGraphEnv(all_args)
+            env.seed(current_seed)
+            return env
+        return init_env
+
+    if all_args.n_rollout_threads == 1:
+        print("  创建单线程 DummyVecEnv 用于训练...")
+        return GraphDummyVecEnv([get_env_fn(0)])
+    else:
+        print(f"  创建 {all_args.n_rollout_threads} 个并行 SubprocVecEnv 用于训练...")
+        # 创建包含 n_rollout_threads 个环境初始化函数的列表
+        return GraphSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 def make_eval_env(all_args: SimpleNamespace):
-    """创建单线程评估环境。"""
-    def get_env_fn():
-        """内部函数，用于延迟创建评估环境实例。"""
-        # 使用与训练环境不同的种子
-        eval_seed = all_args.seed * 50000 + 1
-        print(f"  (评估环境初始化) 使用种子: {eval_seed}")
-        env = MultiAgentGraphEnv(all_args)  # 实例化环境
-        env.seed(eval_seed)                 # 设置环境种子
-        return env
-    # 将创建函数包装在列表中传递给 DummyVecEnv
-    return GraphDummyVecEnv([get_env_fn])
+    """创建评估环境，根据 n_eval_rollout_threads 决定。"""
+    def get_env_fn(rank: int):
+        def init_env():
+            # 使用与训练环境不同的种子基数
+            eval_seed = all_args.seed * 50000 + rank * 10000 + 1
+            print(f"  (评估环境初始化 rank {rank}) 使用种子: {eval_seed}")
+            env = MultiAgentGraphEnv(all_args)
+            env.seed(eval_seed)
+            return env
+        return init_env
+
+    if all_args.n_eval_rollout_threads == 1:
+        print("  创建单线程 DummyVecEnv 用于评估...")
+        return GraphDummyVecEnv([get_env_fn(0)])
+    else:
+        print(f"  创建 {all_args.n_eval_rollout_threads} 个并行 SubprocVecEnv 用于评估...")
+        return GraphSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
 
 # ==============================================================================
 # == 3. 主函数 (优化版) ==
@@ -224,9 +209,6 @@ def main():
     run_dir = (
         Path(project_root) / "results"
         / all_args.env_name
-        / all_args.scenario_name
-        / all_args.algorithm_name
-        / all_args.experiment_name
     )
     run_num = 1
     while (run_dir / f"run{run_num}").exists():
@@ -237,7 +219,7 @@ def main():
 
     # --- 4. 设置进程标题 ---
     setproctitle.setproctitle(
-        f"{all_args.algorithm_name}-{all_args.env_name}-{all_args.scenario_name}@{all_args.user_name}"
+        f"{all_args.env_name}@{all_args.user_name}"
     )
 
     # --- 5. 设置随机种子 ---

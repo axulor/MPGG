@@ -34,7 +34,6 @@ class GR_MAPPO():
         self.clip_param = args.clip_param
         self.ppo_epoch = args.ppo_epoch
         self.num_mini_batch = args.num_mini_batch
-        self.data_chunk_length = args.data_chunk_length
         self.value_loss_coef = args.value_loss_coef
         self.entropy_coef = args.entropy_coef
         self.max_grad_norm = args.max_grad_norm       
@@ -100,7 +99,7 @@ class GR_MAPPO():
 
         return value_loss
     
-    @torch.cuda.amp.autocast()
+    @torch.amp.autocast(device_type='cuda')
     def ppo_update(self, 
                 sample:Tuple, 
                 update_actor:bool=True) -> Tuple[Tensor, Tensor, 

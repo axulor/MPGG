@@ -41,7 +41,7 @@ class GMPERunner:
         self.n_eval_rollout_threads = self.all_args.n_eval_rollout_threads  # 用于策略评估的并行环境实例数量 int
         self.use_linear_lr_decay = self.all_args.use_linear_lr_decay        # 是否在训练过程中线性衰减学习率 bool
         self.hidden_size = self.all_args.hidden_size                        # 神经网络隐藏层的大小/维度 int
-        self.recurrent_N = self.all_args.recurrent_N                        # 循环神经网络的层数 int
+
 
         # 时间间隔参数
         self.save_interval = self.all_args.save_interval    # 每隔 save_interval 个回合，保存当前的 Actor 和 Critic 网络权重
@@ -428,18 +428,6 @@ class GMPERunner:
         # 重置评估环境
         eval_obs, eval_agent_id, eval_node_obs, eval_adj = self.eval_envs.reset()
 
-        # 初始化评估用的 RNN 状态和 Mask
-        eval_rnn_states = np.zeros(
-            (self.n_eval_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size),
-            dtype=np.float32,
-        )
-        # **注意:** Critic RNN 状态也需要初始化
-        eval_rnn_states_critic = np.zeros_like(eval_rnn_states, dtype=np.float32) # 假设形状相同
-
-        eval_masks = np.ones(
-            (self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32
-        )
-
         # 运行指定数量的评估回合
         num_eval_episodes_done = 0
         # 使用列表存储每个线程当前回合的数据
@@ -457,12 +445,8 @@ class GMPERunner:
                 np.concatenate(eval_node_obs),
                 np.concatenate(eval_adj),
                 np.concatenate(eval_agent_id),
-                np.concatenate(eval_rnn_states), # 传入 Actor 的当前状态
-                np.concatenate(eval_masks),
-                deterministic=True,
             )
             # 更新 Actor RNN 状态
-            eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states_actor_next), self.n_eval_rollout_threads))
             # Critic RNN 状态在评估时不更新，保持为 0 或上一步状态（如果需要）
 
             eval_actions = np.array(np.split(_t2n(eval_action), self.n_eval_rollout_threads))

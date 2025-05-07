@@ -65,7 +65,7 @@ class MultiAgentGraphEnv(gym.Env):
         Args:
             args (argparse.Namespace): 包含环境配置参数的对象。
                 需要包含: num_agents, world_size, speed, max_cycles, radius,
-                        cost, r, beta, scenario_name (可选), discrete_action (可选)
+                        cost, r, beta,  discrete_action (可选)
         """
         super().__init__()
 
@@ -78,7 +78,6 @@ class MultiAgentGraphEnv(gym.Env):
         self.cost = args.cost if hasattr(args, 'cost') else 1.0
         self.r = args.r if hasattr(args, 'r') else 1.0 # 公共物品博弈乘数
         self.beta = args.beta if hasattr(args, 'beta') else 0.5 # Fermi 函数噪声参数
-        self.scenario_name = args.scenario_name if hasattr(args, 'scenario_name') else "mpgg_graph" # 场景名称
         self.discrete_action = args.discrete_action if hasattr(args, 'discrete_action') else True # 默认离散动作
 
         # -- 2. 初始化智能体列表 --

@@ -57,7 +57,6 @@ class GraphReplayBuffer(object):
         self.episode_length = args.episode_length
         self.n_rollout_threads = args.n_rollout_threads
         self.hidden_size = args.hidden_size
-        self.recurrent_N = args.recurrent_N
         self.gamma = args.gamma
         self.gae_lambda = args.gae_lambda
         self._use_gae = args.use_gae
@@ -130,17 +129,6 @@ class GraphReplayBuffer(object):
         )
         ####################
 
-        self.rnn_states = np.zeros(
-            (
-                self.episode_length + 1,
-                self.n_rollout_threads,
-                num_agents,
-                self.recurrent_N,
-                self.hidden_size,
-            ),
-            dtype=np.float32,
-        )
-        self.rnn_states_critic = np.zeros_like(self.rnn_states)
 
         self.value_preds = np.zeros(
             (self.episode_length + 1, self.n_rollout_threads, num_agents, 1),
@@ -266,13 +254,6 @@ class GraphReplayBuffer(object):
         self.adj[0] = self.adj[-1].copy()
         self.agent_id[0] = self.agent_id[-1].copy()
         self.share_agent_id[0] = self.share_agent_id[-1].copy()
-        self.rnn_states[0] = self.rnn_states[-1].copy()
-        self.rnn_states_critic[0] = self.rnn_states_critic[-1].copy()
-        self.masks[0] = self.masks[-1].copy()
-        self.bad_masks[0] = self.bad_masks[-1].copy()
-        self.active_masks[0] = self.active_masks[-1].copy()
-        if self.available_actions is not None:
-            self.available_actions[0] = self.available_actions[-1].copy()
 
     def compute_returns(
         self, next_value: arr, value_normalizer: Optional[PopArt] = None
