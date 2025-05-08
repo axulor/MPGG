@@ -201,11 +201,11 @@ class GraphDummyVecEnv(ShareVecEnv):
         # 遍历每个环境和对应的动作
         for i, (action, env) in enumerate(zip(self.actions, self.envs)):
             # 执行一步
-            # **关键:** 返回值顺序和数量需与 env.step() 匹配
+            # 返回值顺序和数量需与 env.step() 匹配
             obs_one, ag_id_one, node_obs_one, adj_one, reward_one, done_one, info_one = env.step(action)
             # 如果环境完成，则自动重置
             if np.all(done_one): # 假设 done_one 是 (num_agents,)
-                # **关键:** 重置后也需要返回相同结构的数据
+                # 重置后也需要返回相同结构的数据
                 obs_one, ag_id_one, node_obs_one, adj_one = env.reset()
             results.append((obs_one, ag_id_one, node_obs_one, adj_one, reward_one, done_one, info_one))
 
@@ -220,7 +220,7 @@ class GraphDummyVecEnv(ShareVecEnv):
         """重置所有环境实例，并返回批量的初始观测。"""
         results = []
         for env in self.envs:
-            # **关键:** 返回值顺序和数量需与 env.reset() 匹配
+            # 返回值顺序和数量需与 env.reset() 匹配
             obs_one, ag_id_one, node_obs_one, adj_one = env.reset()
             results.append((obs_one, ag_id_one, node_obs_one, adj_one))
         # 解包并堆叠
@@ -245,8 +245,6 @@ class GraphSubprocVecEnv(ShareVecEnv):
         self.waiting = False # 标记是否正在等待子进程返回结果
         self.closed = False
         nenvs = len(env_fns) # 环境数量
-
-        
 
         # 创建管道 (Pipe) 用于主进程和子进程之间的双向通信
         self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(nenvs)])

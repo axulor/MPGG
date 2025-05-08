@@ -72,10 +72,10 @@ all_args = SimpleNamespace(
     use_orthogonal=True,            # 使用正交初始化
     gain=0.01,                      # 正交初始化增益
     use_feature_normalization=True, # 输入特征使用 LayerNorm
-    use_popart=True,                # 修正: 使用 PopArt
-    use_valuenorm=False,            # 修正: 不使用 ValueNorm
+    use_popart=True,                # 使用 PopArt
+    use_valuenorm=False,            # 不使用 ValueNorm
     split_batch=True,               # 是否在前向传播时拆分大 batch
-    max_batch_size=1024,              # 拆分 batch 的大小 (如果 split_batch=True)
+    max_batch_size=1024,            # 拆分 batch 的大小 (如果 split_batch=True)
 
     # === GNN 相关参数 ===
     use_gnn_policy=True,            # 策略网络使用 GNN
@@ -88,17 +88,17 @@ all_args = SimpleNamespace(
     embed_layer_N=1,                # Embedding 后 MLP 层数
     embed_use_ReLU=True,            # Embedding 后 MLP 是否用 ReLU
     embed_add_self_loop=True,       # GNN 是否添加自环
-    max_edge_dist=2.0,              # 关键: GNN 构建边的最大距离 (应等于 MPGG radius)
+    max_edge_dist=2.0,              # GNN 构建边的最大距离 (应等于 MPGG radius)
     graph_feat_type="relative",     # GNN 节点特征类型 (来自原始可运行配置)
     actor_graph_aggr="node",        # Actor GNN 聚合方式 (来自原始可运行配置)
-    critic_graph_aggr="global",     # 关键修正: Critic 使用全局聚合
+    critic_graph_aggr="global",     # Critic 使用全局聚合
     global_aggr_type="mean",        # 指定全局聚合类型
     use_cent_obs=True,              # Critic MLP 是否额外接收中心化观测
 
 
     # === PPO 算法参数 ===
     ppo_epoch=10,                   # PPO 更新迭代次数
-    num_mini_batch=64,              # Mini-batch 数量 (1 表示不拆分)
+    num_mini_batch=4,               # Mini-batch 数量 (1 表示不拆分)
     entropy_coef=0.01,              # 熵正则化系数
     value_loss_coef=1.0,            # 值函数损失系数
     lr=7e-4,                        # Actor 学习率
@@ -273,7 +273,7 @@ def main():
         if eval_envs: eval_envs.close()
         sys.exit(1)
 
-    # --- 9. (可选) 打印网络结构 ---
+    # --- 9. 打印网络结构 ---
     if all_args.verbose:
         try:
             print_box("Actor Network", 80)
@@ -308,7 +308,7 @@ def main():
         except Exception as e:
             print(f"  关闭环境时出错: {e}")
 
-        # --- 12. 本地日志收尾 ---
+        # --- 12. 保存本地日志 ---
         # 检查 Runner 是否有 writter 属性 (用于 TensorBoard)
         if hasattr(runner, 'writter') and runner.writter is not None:
             print("正在导出 TensorBoard 日志...")

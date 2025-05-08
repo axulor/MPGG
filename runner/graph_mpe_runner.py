@@ -612,7 +612,6 @@ class GMPERunner:
 
     def log_train(self, train_infos: Dict, total_num_steps: int):
         """ 记录训练信息到 TensorBoard """
-        if self.writter is None: return # 如果未使用 TensorBoard 则跳过
         for key, value in train_infos.items():
             if isinstance(value, (int, float, np.number)):
                 self.writter.add_scalar(f"train/{key}", value, total_num_steps)
@@ -620,8 +619,6 @@ class GMPERunner:
 
     def log_env(self, env_infos: Dict, total_num_steps: int):
         """ 记录环境信息到 TensorBoard """
-        if self.writter is None: return
         for key, value in env_infos.items():
             if isinstance(value, (int, float, np.number)):
-                # key 可能已经是 "system/..." 或 "agentX/..."
                 self.writter.add_scalar(f"env/{key}", value, total_num_steps)
