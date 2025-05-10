@@ -1,7 +1,7 @@
 import time
 import numpy as np
 from numpy import ndarray as arr # 类型别名，方便书写
-from typing import Tuple, Dict 
+from typing import Tuple, Dict, List 
 import torch
 import os
 
@@ -145,11 +145,35 @@ class GMPERunner:
 
             # --- 训练网络 ---
             print(f"  (Runner) 回合 {episode + 1}/{episodes}: 开始训练网络...")
-            train_infos = self.train() 
-            print("  (Runner) 训练完成.")
+            train_infos = self.train()            # 返回训练 Infos
+            print(" (Runner) 训练完成.")
+            env_infos = self.process_infos(infos) # 处理环境 infos
 
             # --- 后处理与记录 ---
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads # 目前所在的总环境步长
+
+            # === 打印回合结果 ===
+            print(f"--- 回合 {episode + 1}/{episodes} 结束 (总步数: {total_num_steps}) ---")
+            # 打印训练信息
+            if train_infos: # 确保 train_infos 不是 None 或空
+                print("  训练指标 (Train Infos):")
+                for key, value in train_infos.items():
+                    if isinstance(value, (float, int, np.number)): # 只打印标量值
+                        print(f"    {key}: {value:.4f}")
+                    elif isinstance(value, torch.Tensor) and value.numel() == 1: # 单元素 Tensor
+                        print(f"    {key}: {value.item():.4f}")
+            else:
+                print("  训练指标 (Train Infos): 无")
+
+            # 打印环境信息 (来自 process_infos)
+            if env_infos: # 确保 env_infos 不是 None 或空
+                print("  环境指标 (Env Infos - 来自 process_infos):")
+                for key, value in env_infos.items():
+                    if isinstance(value, (float, int, np.number)):
+                        print(f"    {key}: {value:.4f}")
+            else:
+                print("  环境指标 (Env Infos): 无")
+            # ==========================
 
             # 保存模型
             if (episode + 1) % self.save_interval == 0 or episode == episodes - 1: # 达到保存间隔或者 episode 结束
@@ -159,21 +183,7 @@ class GMPERunner:
 
             # 记录日志
             if (episode + 1) % self.log_interval == 0: # 达到日志保存间隔
-                end_time = time.time()
-                elapsed_time = end_time - start_time
                 print(f"  (Runner) 回合 {episode + 1}/{episodes}: 记录日志...")
-                #TODO 处理环境 infos
-                env_infos = self.process_infos(infos) 
-                # 计算平均回合奖励估计
-                avg_ep_rew = np.mean(self.buffer.rewards) * self.episode_length
-                train_infos["average_episode_rewards"] = avg_ep_rew
-                print(
-                    f"回合 [{episode + 1}/{episodes}] | "
-                    f"总步数: {total_num_steps}/{self.num_env_steps} "
-                    f"({total_num_steps / self.num_env_steps * 100:.1f}%) | "
-                    f"平均回合奖励 (估计): {avg_ep_rew:.3f} | "
-                    f"用时: {elapsed_time:.2f}s"
-                )
                 # 写入 TensorBoard
                 self.log_train(train_infos, total_num_steps)
                 self.log_env(env_infos, total_num_steps)
@@ -471,11 +481,6 @@ class GMPERunner:
             # --- 处理回合结束 ---
             eval_dones_env = np.all(eval_dones, axis=1)
 
-            # 重置结束回合的 Actor RNN 状态和 Mask
-            eval_rnn_states[eval_dones_env == True] = 0.0
-            eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
-            eval_masks[eval_dones_env == True] = 0.0
-
             # --- 统计完成的回合 ---
             for i in range(self.n_eval_rollout_threads):
                 if eval_dones_env[i]:
@@ -557,57 +562,103 @@ class GMPERunner:
 
 
     # TODO
-    def process_infos(self, infos: list) -> Dict: 
+    def process_infos(self, infos: List[List[Dict]]) -> Dict:
         """
-        处理环境返回的 info 列表 (来自原 BaseRunner，已为 MPGG 简化)。
-        提取个体奖励和策略，计算系统平均值
+        处理环境返回的 info 列表，提取和聚合 MPGG 相关指标。
+        这个函数在每个 rollout 结束时被调用，infos 是最后一个时间步的 info。
+        因此，我们期望环境在最后一个时间步的 info 中包含了整个 episode 的聚合指标。
 
         Args:
-            infos (list): 格式 List[List[Dict]] (n_threads, n_agents)。
+            infos (List[List[Dict]]): 形状 (n_rollout_threads, num_agents) 的字典列表。
+                                      每个字典包含了对应智能体在 episode 结束时的 info。
 
         Returns:
-            Dict: 包含聚合后信息的字典。
+            Dict: 包含聚合后指标的字典，用于 TensorBoard 日志记录。
         """
-        env_infos = {}
+        env_infos_to_log = {} # 用于存储最终要记录到 TensorBoard 的指标
+
+        # --- 初始化用于累加所有线程的 episode 指标的列表 ---
+        all_ep_social_gdp = []
+        all_ep_avg_reward_per_agent_step = []
+        all_ep_avg_cooperation_rate = []
+        # 也可以收集个体累积奖励的分布等
+        # all_ep_individual_cumulative_rewards = []
+
         num_threads = len(infos)
-        if num_threads == 0 or len(infos[0]) == 0: return env_infos
+        if num_threads == 0:
+            return env_infos_to_log
 
-        # 确保 infos 结构符合预期
-        if not isinstance(infos[0], list) or not isinstance(infos[0][0], dict):
-            print(f"警告: process_infos 收到意外的 infos 格式: {type(infos[0])}")
-            return env_infos
-
-        # 收集所有线程和智能体的指标
-        all_rewards = []
-        all_strategies = []
         for thread_id in range(num_threads):
-            for agent_id in range(self.num_agents):
-                if agent_id < len(infos[thread_id]):
-                    agent_info = infos[thread_id][agent_id]
-                    all_rewards.append(agent_info.get("individual_reward", np.nan))
-                    all_strategies.append(agent_info.get("strategy", np.nan))
-                else: # 处理可能的长度不匹配
-                    all_rewards.append(np.nan)
-                    all_strategies.append(np.nan)
+            # 对于每个线程，我们通常只需要一个 agent 的 info 来获取 episode 级别的聚合指标，
+            # 因为这些指标是在环境中计算的，并且对于该 episode 内的所有 agent 应该是相同的（如果是系统级指标）。
+            # 或者，我们可以选择第一个 agent 的 info 作为代表。
+            if self.num_agents > 0 and len(infos[thread_id]) > 0:
+                # 以第一个 agent 的 info 为例，提取 episode 聚合指标
+                # 假设这些 key 是在 marl_env.py 的 step 方法中，当 is_episode_done 时添加的
+                first_agent_info_in_thread = infos[thread_id][0]
 
-        # 计算系统平均指标 (忽略 NaN)
-        valid_rewards = [r for r in all_rewards if not np.isnan(r)]
-        valid_strategies = [s for s in all_strategies if not np.isnan(s)]
+                ep_social_gdp = first_agent_info_in_thread.get("episode_social_gdp")
+                if ep_social_gdp is not None:
+                    all_ep_social_gdp.append(ep_social_gdp)
 
-        if valid_rewards:
-            env_infos["system/mean_individual_reward"] = np.mean(valid_rewards)
-        if valid_strategies:
-            env_infos["system/cooperation_rate"] = np.mean(valid_strategies)
+                ep_avg_reward = first_agent_info_in_thread.get("episode_avg_reward_per_agent_step")
+                if ep_avg_reward is not None:
+                    all_ep_avg_reward_per_agent_step.append(ep_avg_reward)
 
-        # 也可以记录每个智能体的平均指标（如果需要）
-        # for agent_id in range(self.num_agents):
-        #     agent_rewards = [infos[t][agent_id].get("individual_reward", np.nan) for t in range(num_threads) if agent_id < len(infos[t])]
-        #     valid_agent_rewards = [r for r in agent_rewards if not np.isnan(r)]
-        #     if valid_agent_rewards:
-        #          env_infos[f"agent{agent_id}/individual_reward_mean"] = np.mean(valid_agent_rewards)
-        #     # ... (记录策略等) ...
+                ep_coop_rate = first_agent_info_in_thread.get("episode_avg_cooperation_rate")
+                if ep_coop_rate is not None:
+                    all_ep_avg_cooperation_rate.append(ep_coop_rate)
 
-        return env_infos
+                # 如果需要记录每个 agent 的累积奖励，可以这样做：
+                # for agent_id_local in range(self.num_agents):
+                #     if agent_id_local < len(infos[thread_id]):
+                #         agent_specific_info = infos[thread_id][agent_id_local]
+                #         ind_cum_rew = agent_specific_info.get("episode_individual_cumulative_reward")
+                #         if ind_cum_rew is not None:
+                #             all_ep_individual_cumulative_rewards.append(ind_cum_rew)
+            else:
+                print(f"警告: process_infos 在 thread {thread_id} 中没有找到足够的 agent info。")
+
+
+        # --- 计算所有线程的平均值 ---
+        if all_ep_social_gdp:
+            env_infos_to_log["episode/social_gdp_mean"] = np.mean(all_ep_social_gdp)
+            # 也可以记录标准差等
+            # env_infos_to_log["episode/social_gdp_std"] = np.std(all_ep_social_gdp)
+        if all_ep_avg_reward_per_agent_step:
+            env_infos_to_log["episode/avg_reward_per_agent_step_mean"] = np.mean(all_ep_avg_reward_per_agent_step)
+        if all_ep_avg_cooperation_rate:
+            env_infos_to_log["episode/avg_cooperation_rate_mean"] = np.mean(all_ep_avg_cooperation_rate)
+
+        # --- (可选) 记录每一步的平均合作率和平均个体奖励 ---
+        # 这需要从 buffer 中提取数据，或者让环境在每一步的 info 中提供
+        # 这里仅作示例，假设我们想记录最后一个 rollout 中所有 agent 在所有 step 的平均合作率
+        # 注意：buffer 中的数据是 (episode_length+1, n_threads, n_agents, ...)
+        # infos 传入的是最后一个 step 的 info，可能不适合计算 rollout 平均值
+        # 更稳妥的做法是在 Runner 的 run 循环中，在 self.insert(data) 之后，
+        # 实时地从 infos 中提取每一步的合作信息并累加，然后在 log_interval 时计算平均值。
+        # 但为了简化，这里我们只处理 episode 结束时的聚合信息。
+
+        # 简单示例：记录最后一个 step 的系统平均合作率和奖励 (如果 env_infos 中有)
+        # 这部分与之前的 process_infos 逻辑类似，但现在我们更关注 episode 级别的指标
+        step_rewards = []
+        step_strategies = []
+        for thread_infos in infos:
+            for agent_info in thread_infos:
+                 if isinstance(agent_info, dict):
+                    step_rewards.append(agent_info.get("individual_reward_step", np.nan))
+                    step_strategies.append(agent_info.get("strategy_step", np.nan))
+
+        valid_step_rewards = [r for r in step_rewards if not np.isnan(r)]
+        valid_step_strategies = [s for s in step_strategies if not np.isnan(s)]
+
+        if valid_step_rewards:
+            env_infos_to_log["step/mean_reward"] = np.mean(valid_step_rewards)
+        if valid_step_strategies:
+            env_infos_to_log["step/cooperation_rate"] = np.mean(valid_step_strategies)
+
+
+        return env_infos_to_log
 
 
     def log_train(self, train_infos: Dict, total_num_steps: int):

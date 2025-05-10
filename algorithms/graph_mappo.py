@@ -214,14 +214,19 @@ class GR_MAPPO():
             update_actor:bool=True):
         """
             Perform a training update using minibatch GD.
-            buffer: (GraphReplayBuffer) 
-                buffer containing training data.
-            update_actor: (bool) 
-                whether to update actor network.
+            使用小批量梯度下降执行一次训练更新。
 
-            :return train_info: (dict) 
-                contains information regarding 
+            buffer: (GraphReplayBuffer)
+                buffer containing training data.
+                包含训练数据的缓冲区。
+            update_actor: (bool)
+                whether to update actor network.
+                是否更新 Actor 网络。
+
+            :return train_info: (dict)
+                contains information regarding
                 training update (e.g. loss, grad norms, etc).
+                返回一个包含训练更新信息的字典（例如损失、梯度范数等）。
         """
         if self._use_popart or self._use_valuenorm:
             advantages = buffer.returns[:-1] - \
@@ -238,29 +243,24 @@ class GR_MAPPO():
 
         train_info = {}
 
-        train_info['value_loss'] = 0
-        train_info['policy_loss'] = 0
-        train_info['dist_entropy'] = 0
-        train_info['actor_grad_norm'] = 0
-        train_info['critic_grad_norm'] = 0
-        train_info['ratio'] = 0
+        train_info['value_loss'] = 0        # 价值损失累加
+        train_info['policy_loss'] = 0       # 策略损失累加
+        train_info['dist_entropy'] = 0      # 策略熵累加
+        train_info['actor_grad_norm'] = 0   # Actor 梯度范数累加
+        train_info['critic_grad_norm'] = 0  # Critic 梯度范数累加
+        train_info['ratio'] = 0             # 重要性采样比率的平均值累加
 
         for _ in range(self.ppo_epoch):
-            st = time.time()
-
-
+            # self.ppo_epoch 指定重复更新的次数
             data_generator = buffer.feed_forward_generator(advantages, self.num_mini_batch)
             
             # actor_backward_time, critic_backward_time = 0, 0 
 
             for sample in data_generator:
-
+                # data_generator 会将整个 Buffer 的数据分割成 self.num_mini_batch 个小批次
                 value_loss, critic_grad_norm, policy_loss, dist_entropy, \
                 actor_grad_norm, imp_weights, actor_bt, critic_bt = self.ppo_update(sample, update_actor)
                 
-
-                # actor_backward_time += actor_bt
-                # critic_backward_time += critic_bt
                 train_info['value_loss'] += value_loss.item()
                 train_info['policy_loss'] += policy_loss.item()
                 train_info['dist_entropy'] += dist_entropy.item()
@@ -272,7 +272,7 @@ class GR_MAPPO():
         num_updates = self.ppo_epoch * self.num_mini_batch
 
         for k in train_info.keys():
-            train_info[k] /= num_updates
+            train_info[k] /= num_updates # 将累加值除以总更新次数得到平均值
 
         return train_info
 

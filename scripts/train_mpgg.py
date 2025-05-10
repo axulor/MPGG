@@ -56,7 +56,7 @@ all_args = SimpleNamespace(
     cost=1.0,                     # MPGG 合作成本
     r=4.0,                        # MPGG PGG 乘数因子 (示例值)
     beta=1.0,                     # MPGG Fermi 噪声参数 (示例值)
-    max_cycles=500,                # MPGG 环境最大步数
+    max_cycles=50,                # MPGG 环境最大步数
     discrete_action = False,      # 默认为连续动作
     episode_length=50,           # Replay Buffer 中存储的时序轨迹的长度  
 
@@ -117,14 +117,14 @@ all_args = SimpleNamespace(
     weight_decay=0,                 # 权重衰减
 
     # === 运行参数 ===
-    use_linear_lr_decay=True,       # 不使用学习率线性衰减
+    use_linear_lr_decay=True,       # 使用学习率线性衰减
 
     # === 保存与日志 ===
-    save_interval=100,               # 模型保存频率 (按训练次数或回合数，取决于 runner 实现)
-    log_interval=10,                 # 日志打印频率 (按训练次数或回合数)
+    save_interval=10,               # 模型保存频率 (按训练次数或回合数，取决于 runner 实现)
+    log_interval=1,                 # 日志打印频率 (按训练次数或回合数)
 
     # === 评估参数 ===
-    use_eval=True,                  # 启用周期性评估
+    use_eval=False,                  # 启用周期性评估
     eval_interval=20,               # 评估频率 (按训练次数或回合数)
     eval_episodes=32,               # 每次评估运行的回合数
 

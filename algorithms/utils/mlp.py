@@ -105,7 +105,7 @@ class MLPBase(nn.Module):
                 MLP 输出特征
         """
         # 调试：打印输入张量的形状
-        print(f"[DEBUG] MLP forward input shape = {x.shape}")
+        # print(f"[DEBUG] MLP forward input shape = {x.shape}")
 
         if self._use_feature_normalization:
             # 如果最后一维小于期望维度，则右侧用 0 填充到 obs_dim
