@@ -8,8 +8,9 @@ import os
 # from torch.utils.tensorboard import SummaryWriter # 可以用这个或 tensorboardX
 from tensorboardX import SummaryWriter # 使用 tensorboardX
 from algorithms.graph_mappo import GR_MAPPO 
-from algorithms.graph_MAPPOPolicy import GR_MAPPOPolicy as Policy
+from algorithms.graph_MAPPOPolicy import GR_MAPPOPolicy
 from utils.graph_buffer import GraphReplayBuffer #  导入 Buffer 类
+from utils.eval import Evaluate  # 导入策略评估类
 
 
 def _t2n(x):
@@ -26,7 +27,7 @@ class GMPERunner:
         Args:
             config (Dict)
         """
-        # --- 1. 参数初始化 ---
+        # Runner 初始化
         self.all_args = config["all_args"]      # 存储所有超参数的配置对象, types.SimpleNamespace
         self.envs = config["envs"]              # 训练环境, envs.env_wrappers.GraphDummyVecEnv 
         self.eval_envs = config["eval_envs"]    # 评估环境, envs.env_wrappers.GraphDummyVecEnv
@@ -35,7 +36,7 @@ class GMPERunner:
         # 训练设置参数
         self.num_agents = self.all_args.num_agents                          # 环境中由策略控制的智能体数量 int
         self.use_centralized_V = self.all_args.use_centralized_V            # 是否使用中心化 Critic 布尔值 bool
-        self.num_env_steps = self.all_args.num_env_steps                    # 整个训练过程将要运行的环境交互总次数的上限 int
+        self.num_env_steps = self.all_args.num_env_steps                    # 整个训练过程将要运行的环境交互总次数 int
         self.episode_length = self.all_args.episode_length                  # Replay Buffer 中存储的时序轨迹的长度 int 
         self.n_rollout_threads = self.all_args.n_rollout_threads            # 用于数据搜集的并行环境实例数量 int
         self.n_eval_rollout_threads = self.all_args.n_eval_rollout_threads  # 用于策略评估的并行环境实例数量 int
@@ -45,9 +46,9 @@ class GMPERunner:
 
         # 时间间隔参数
         self.save_interval = self.all_args.save_interval    # 每隔 save_interval 个回合，保存当前的 Actor 和 Critic 网络权重
+        self.log_interval = self.all_args.log_interval      # 每隔 log_interval 个回合, 写入训练日志
         self.use_eval = self.all_args.use_eval              # 训练暂停，使用当前的策略在独立的评估环境中运行，并记录性能指标     
         self.eval_interval = self.all_args.eval_interval    # 每隔 eval_interval 个回合, 启动评估
-        self.log_interval = self.all_args.log_interval      # 每隔 log_interval 个回合, 写入训练日志
 
         # 目录参数
         self.model_dir = self.all_args.model_dir        # 预训练模型目录        
@@ -73,7 +74,7 @@ class GMPERunner:
         print("  (Runner) 初始化策略网络...")
 
         # 图环境 Policy 初始化 (保持上次修正后的参数列表)
-        self.policy = Policy(
+        self.policy = GR_MAPPOPolicy(
             self.all_args,                      # 1. args
             self.envs.observation_space[0],     # 2. obs_space
             share_observation_space,            # 3. cent_obs_space
@@ -95,6 +96,9 @@ class GMPERunner:
 
         # 初始化经验回放缓冲区
         print("  (Runner) 初始化 Replay Buffer...")
+        # MODIFICATION START: Pass bad_mask_shape to buffer if we decide to store it
+        # For now, just ensure other shapes are correct.
+        # The buffer will need to handle bad_masks internally based on infos.
         self.buffer = GraphReplayBuffer(
             self.all_args,
             self.num_agents,
@@ -105,8 +109,27 @@ class GMPERunner:
             self.envs.share_agent_id_observation_space[0],
             self.envs.adj_observation_space[0], 
             self.envs.action_space[0],
+            # Add bad_mask_space if you define it, e.g., spaces.Discrete(2) or spaces.Box(0,1, (1,))
         )
+        # MODIFICATION END
 
+        # 实例化评估器
+        self.evaluator = None
+        if self.all_args.use_eval and self.eval_envs is not None:
+            print("  (Runner) 初始化评估器...")
+            try:
+                self.evaluator = Evaluate(
+                    all_args=self.all_args,          # 传递完整的配置对象
+                    policy=self.policy,         # 传递 self.policy
+                    eval_envs=self.eval_envs,   # 传递评估环境
+                    run_dir=self.run_dir,       # 将 Runner 自己的 run_dir 传递过去
+                )
+                print("  (Runner) 评估器初始化完成.")
+            except Exception as e:
+                print(f"警告：初始化评估器失败: {e}")
+                self.evaluator = None
+        else:
+            self.evaluator = None
 
     def run(self):
         """主训练循环"""
@@ -114,175 +137,155 @@ class GMPERunner:
         self.warmup() # 初始化 Buffer 中的第一个时间步数据
         print("  (Runner) Warmup 完成 ")
 
-        start_time = time.time() # 记录开始时间
-        episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads # 计算总共需要运行的回合数
+        episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
         print(f"  (Runner) 总训练步数: {self.num_env_steps}, 每回合步数: {self.episode_length}, 并行环境数: {self.n_rollout_threads}")
-        print(f"  (Runner) 将运行 {episodes} 个回合 ")
+        print(f"  (Runner) 将运行 {episodes} 个学习更新周期 ")
 
-        # --- 核心训练循环 ---
+        # 核心训练循环
+        # last_obs, last_agent_id, last_node_obs, last_adj are not strictly needed here
+        # if buffer.after_update() correctly copies the last_obs to obs[0]
+        # and warmup initializes obs[0] correctly.
+        # The buffer's internal `step` pointer handles the circularity.
+
         for episode in range(episodes):
-            # 学习率衰减
             if self.use_linear_lr_decay:
                 self.trainer.policy.lr_decay(episode, episodes)
 
-            # --- Rollout：注意 episode_length 仅仅是数据收集和网络更新的周期 ---
-            for step in range(self.episode_length):
-                # 1. 采样
-                values, actions, action_log_probs, actions_env = self.collect(step)
-                # 2. 交互
-                obs, agent_id, node_obs, adj, rewards, dones, infos = self.envs.step(actions_env)
-                # 3. 将数据插入 Buffer
+            # Rollout: Collect data for self.episode_length steps
+            for step in range(self.episode_length):             
+                # self.collect(step) uses self.buffer.obs[self.buffer.step] (or the current logical step in buffer)
+                values, actions, action_log_probs = self.collect() # MODIFICATION: collect no longer needs `step`
+                
+                obs, agent_id, node_obs, adj, rewards, dones, infos = self.envs.step(actions)
+                
+                # MODIFICATION START: Prepare bad_masks from infos
+                # Assuming marl_env.py puts 'bad_mask_indicator' in each agent's info dict
+                bad_masks = []
+                for thread_info in infos: # infos is List[List[Dict]] (n_threads, n_agents)
+                    thread_bad_masks = []
+                    for agent_info in thread_info:
+                        thread_bad_masks.append(agent_info.get('bad_mask_indicator', True))
+                    bad_masks.append(thread_bad_masks)
+                bad_masks = np.array(bad_masks, dtype=np.bool_) # Shape: (n_threads, n_agents)
+                # MODIFICATION END
+
                 data = (obs, agent_id, node_obs, adj,
-                        rewards, dones, infos,
-                        values, actions, action_log_probs,
-                        )
+                        rewards, dones, bad_masks, infos, # MODIFICATION: added bad_masks
+                        values, actions, action_log_probs)
                 self.insert(data)
 
-            # --- 计算回报和优势 ---
+            # Computations after collecting a full episode_length segment
             print(f"  (Runner) 回合 {episode + 1}/{episodes}: 计算 Return 和 Advantage...")
             self.compute()
             print("  (Runner) 计算完成.")
 
-            # --- 训练网络 ---
             print(f"  (Runner) 回合 {episode + 1}/{episodes}: 开始训练网络...")
-            train_infos = self.train()            # 返回训练 Infos
+            train_infos = self.train()
             print(" (Runner) 训练完成.")
-            env_infos = self.process_infos(infos) # 处理环境 infos
+            
+            # MODIFICATION: process_infos now takes dones from the *last step of the rollout*
+            # `dones` here is from the very last envs.step() call in the inner loop
+            env_infos_for_log = self.process_infos(infos, dones) 
 
-            # --- 后处理与记录 ---
-            total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads # 目前所在的总环境步长
-
-            # === 打印回合结果 ===
-            print(f"--- 回合 {episode + 1}/{episodes} 结束 (总步数: {total_num_steps}) ---")
-            # 打印训练信息
-            if train_infos: # 确保 train_infos 不是 None 或空
+            total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
+            
+            print(f"--- {episode + 1}/{episodes} 结束 (总步数: {total_num_steps}) ---")
+            if train_infos:
                 print("  训练指标 (Train Infos):")
                 for key, value in train_infos.items():
-                    if isinstance(value, (float, int, np.number)): # 只打印标量值
+                    if isinstance(value, (float, int, np.number)):
                         print(f"    {key}: {value:.4f}")
-                    elif isinstance(value, torch.Tensor) and value.numel() == 1: # 单元素 Tensor
+                    elif isinstance(value, torch.Tensor) and value.numel() == 1:
                         print(f"    {key}: {value.item():.4f}")
             else:
                 print("  训练指标 (Train Infos): 无")
 
-            # 打印环境信息 (来自 process_infos)
-            if env_infos: # 确保 env_infos 不是 None 或空
-                print("  环境指标 (Env Infos - 来自 process_infos):")
-                for key, value in env_infos.items():
+            if env_infos_for_log:
+                print("  环境指标 (Env Infos ):")
+                for key, value in env_infos_for_log.items():
                     if isinstance(value, (float, int, np.number)):
                         print(f"    {key}: {value:.4f}")
             else:
                 print("  环境指标 (Env Infos): 无")
-            # ==========================
 
-            # 保存模型
-            if (episode + 1) % self.save_interval == 0 or episode == episodes - 1: # 达到保存间隔或者 episode 结束
+            if (episode + 1) % self.save_interval == 0 or episode == episodes - 1:
                 print(f"  (Runner) 回合 {episode + 1}/{episodes}: 保存模型...")
                 self.save()
                 print("  (Runner) 模型已保存.")
 
-            # 记录日志
-            if (episode + 1) % self.log_interval == 0: # 达到日志保存间隔
+            if (episode + 1) % self.log_interval == 0:
                 print(f"  (Runner) 回合 {episode + 1}/{episodes}: 记录日志...")
-                # 写入 TensorBoard
                 self.log_train(train_infos, total_num_steps)
-                self.log_env(env_infos, total_num_steps)
+                self.log_env(env_infos_for_log, total_num_steps)
                 print("  (Runner) 日志记录完成.")
 
-            #TODO 达到评估间隔或者 episode 结束, 执行评估
             if self.use_eval and ((episode + 1) % self.eval_interval == 0 or episode == episodes - 1):
                 print(f"  (Runner) 回合 {episode + 1}/{episodes}: 执行评估...")
                 self.eval(total_num_steps)
                 print("  (Runner) 评估完成.")
 
-        # 训练循环结束
-        print("所有训练回合已完成。")
+        print("所有训练回合已完成. ")
 
 
     def warmup(self):
         """
-        初始化 Replay Buffer 中的第一个时间步的数据 
+        初始化 Replay Buffer 中的第一个时间步的数据 (s_0).
+        This is called once at the very beginning of training.
         """
-        # 1. 重置环境，获取初始状态
-        obs, agent_id, node_obs, adj = self.envs.reset()
-
+        obs, agent_id, node_obs, adj = self.envs.reset() # This resets all parallel envs
         
-        # print(f"obs:\ttype={type(obs)}, length={len(obs)}")
-        # print(f"obs[0]:\ttype={type(obs[0])}, shape={obs[0].shape}, dtype={obs[0].dtype}")
-        # print(obs)
-
-        # print(f"agent_id:\ttype={type(agent_id)}, length={len(agent_id)}")
-        # print(f"agent_id[0]:\ttype={type(agent_id[0])}, shape={agent_id[0].shape}, dtype={agent_id[0].dtype}")
-        # print(agent_id)
-
-        # print(f"node_obs:\ttype={type(node_obs)}, length={len(node_obs)}")
-        # print(f"node_obs[0]:\ttype={type(node_obs[0])}, shape={node_obs[0].shape}, dtype={node_obs[0].dtype}")
-        # print(node_obs)
-
-        # print(f"adj:\ttype={type(adj)}, length={len(adj)}")
-        # print(f"adj[0]:\ttype={type(adj[0])}, shape={adj[0].shape}, dtype={adj[0].dtype}")
-        # print(adj)
-        
-
-        # 2. 准备中心化观测 (Share Observation)
         if self.use_centralized_V:
             share_obs = obs.reshape(self.n_rollout_threads, -1)
-            share_obs = np.expand_dims(share_obs, 1).repeat(self.num_agents, axis=1) # 最终维度为 (1, N, N*D)，1表示线程数, N表示智能体数, D表示特征数
+            share_obs = np.expand_dims(share_obs, 1).repeat(self.num_agents, axis=1)
             share_agent_id = agent_id.reshape(self.n_rollout_threads, -1)
-            share_agent_id = np.expand_dims(share_agent_id, 1).repeat(self.num_agents, axis=1) # 最终维度为 (1, N, N), 第二个N表示ID数
+            share_agent_id = np.expand_dims(share_agent_id, 1).repeat(self.num_agents, axis=1)
         else:
-            share_obs = obs # (N,D), N代表智能体个数
-            share_agent_id = agent_id # (N,1), 1表示id向量维度为1
+            share_obs = obs
+            share_agent_id = agent_id
 
-        # print(f"share_obs:\ttype={type(share_obs)}, shape={share_obs.shape}, dtype={share_obs.dtype}")
-        # print(f"share_obs[0]:\ttype={type(share_obs[0])}, shape={share_obs[0].shape}, dtype={share_obs[0].dtype}")
-
-        # print(f"obs:\ttype={type(obs)}, shape={obs.shape}, dtype={obs.dtype}")
-        # print(f"obs[0]:\ttype={type(obs[0])}, shape={obs[0].shape}, dtype={obs[0].dtype}")
-
-        # print(f"node_obs:\ttype={type(node_obs)}, shape={node_obs.shape}, dtype={node_obs.dtype}")
-        # print(f"node_obs[0]:\ttype={type(node_obs[0])}, shape={node_obs[0].shape}, dtype={node_obs[0].dtype}")
-
-        # print(f"adj:\ttype={type(adj)}, shape={adj.shape}, dtype={adj.dtype}")
-        # print(f"adj[0]:\ttype={type(adj[0])}, shape={adj[0].shape}, dtype={adj[0].dtype}")
-
-
-        # print(f"agent_id:\ttype={type(agent_id)}, shape={agent_id.shape}, dtype={agent_id.dtype}")
-        # print(f"agent_id[0]:\ttype={type(agent_id[0])}, shape={agent_id[0].shape}, dtype={agent_id[0].dtype}")
-
-        # print(f"share_agent_id:\ttype={type(share_agent_id)}, shape={share_agent_id.shape}, dtype={share_agent_id.dtype}")
-        # print(f"share_agent_id[0]:\ttype={type(share_agent_id[0])}, shape={share_agent_id[0].shape}, dtype={share_agent_id[0].dtype}")
-        # 3. 将初始状态存入 Buffer 的第 0 步
+        # Store initial observations at buffer.obs[0], etc.
         self.buffer.share_obs[0] = share_obs.copy()
         self.buffer.obs[0] = obs.copy()
         self.buffer.node_obs[0] = node_obs.copy()
         self.buffer.adj[0] = adj.copy()
         self.buffer.agent_id[0] = agent_id.copy()
         self.buffer.share_agent_id[0] = share_agent_id.copy()
+        
+        # For s_0, the 'previous' done state (dones_env[0]) is False.
+        self.buffer.dones_env[0] = np.zeros(
+            (self.n_rollout_threads, self.num_agents, 1),
+            dtype=np.float32
+        )
+        # MODIFICATION START: Also initialize bad_masks[0] if buffer stores it
+        # Assuming s_0 is never a "bad terminal" state for GAE purposes.
+        # If buffer has self.bad_masks:
+        # self.buffer.bad_masks[0] = np.ones(
+        # (self.n_rollout_threads, self.num_agents, 1), dtype=np.float32
+        # ) # Or np.bool_ depending on buffer's dtype for bad_masks
+        # MODIFICATION END
+
+        self.buffer.step = 0 # Explicitly set buffer's circular pointer to 0
 
 
     @torch.no_grad() 
-    def collect(self, step: int) -> Tuple[arr, arr, arr, arr, arr, arr]:
+    # MODIFICATION: `collect` no longer needs `step` argument,
+    # it will use `self.buffer.step` to get the current obs `s_t`
+    def collect(self) -> Tuple[arr, arr, arr]:
         """
-        使用当前策略网络收集动作
-
-        Args:
-            step (int): 当前在 Replay Buffer 中的时间步索引
-
-        Returns:
-            Tuple[arr, arr, arr, arr, arr, arr]: 包含价值、动作、logp、RNN状态和环境动作
+        使用当前策略网络收集动作 for s_t (which is at self.buffer.obs[self.buffer.step]).
         """
-        self.trainer.prep_rollout() #TODO 设置网络为评估模式
+        self.trainer.prep_rollout()
 
-        # 从 Buffer 获取信息
-        share_obs_batch = np.concatenate(self.buffer.share_obs[step]) # np.concatenate(...） 把这 T 个线程的数据沿第一个维度拼到一起, (T·N, N·D)
-        obs_batch = np.concatenate(self.buffer.obs[step])
-        node_obs_batch = np.concatenate(self.buffer.node_obs[step])
-        adj_batch = np.concatenate(self.buffer.adj[step])
-        agent_id_batch = np.concatenate(self.buffer.agent_id[step])
-        share_agent_id_batch = np.concatenate(self.buffer.share_agent_id[step])
+        # Get s_t from the buffer's current position `self.buffer.step`
+        # Note: self.buffer.share_obs[self.buffer.step] has shape (n_threads, n_agents, obs_dim)
+        # We need to concatenate along the thread dimension for batch processing by the policy.
+        share_obs_batch = np.concatenate(self.buffer.share_obs[self.buffer.step])
+        obs_batch = np.concatenate(self.buffer.obs[self.buffer.step])
+        node_obs_batch = np.concatenate(self.buffer.node_obs[self.buffer.step])
+        adj_batch = np.concatenate(self.buffer.adj[self.buffer.step])
+        agent_id_batch = np.concatenate(self.buffer.agent_id[self.buffer.step])
+        share_agent_id_batch = np.concatenate(self.buffer.share_agent_id[self.buffer.step])
 
-        # --- 调用策略网络 ---
         value, action, action_log_prob = self.trainer.policy.get_actions(
             share_obs_batch,    
             obs_batch,
@@ -291,236 +294,119 @@ class GMPERunner:
             agent_id_batch,     
             share_agent_id_batch,
         )
-
-        # print(f"value:\ttype={type(value)}, shape={value.shape}, dtype={value.dtype}")
-        # print(f"value[0]:\ttype={type(value[0])}, shape={value[0].shape}, dtype={value[0].dtype}")
-
-        # print(f"action:\ttype={type(action)}, shape={action.shape}, dtype={action.dtype}")
-        # print(f"action[0]:\ttype={type(action[0])}, shape={action[0].shape}, dtype={action[0].dtype}")
-
-        # print(f"action_log_prob:\ttype={type(action_log_prob)}, shape={action_log_prob.shape}, dtype={action_log_prob.dtype}")
-        # print(f"action_log_prob[0]:\ttype={type(action_log_prob[0])}, shape={action_log_prob[0].shape}, dtype={action_log_prob[0].dtype}")
-
-
-
-        # --- 处理网络输出 ---
-        values = np.array(np.split(_t2n(value), self.n_rollout_threads)) # 加上并行线程数 T 维度
+        
+        values = np.array(np.split(_t2n(value), self.n_rollout_threads)) 
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
-        action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads)) # 重新构造一个 (T, …) 的数组
+        action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
 
-        # print(f"values:\ttype={type(values)}, shape={values.shape}, dtype={values.dtype}")
-        # print(f"values[0]:\ttype={type(values[0])}, shape={values[0].shape}, dtype={values[0].dtype}")
+        return values, actions, action_log_probs
 
-        # print(f"actions:\ttype={type(actions)}, shape={actions.shape}, dtype={actions.dtype}")
-        # print(f"actions[0]:\ttype={type(actions[0])}, shape={actions[0].shape}, dtype={actions[0].dtype}")
-
-        # print(f"action_log_probs:\ttype={type(action_log_probs)}, shape={action_log_probs.shape}, dtype={action_log_probs.dtype}")
-        # print(f"action_log_probs[0]:\ttype={type(action_log_probs[0])}, shape={action_log_probs[0].shape}, dtype={action_log_probs[0].dtype}")
-
-        # i = 6
-        # v = value[i,0].item()
-        # a = action[i,0].item()
-        # lp = action_log_prob[i,0].item()
-        # print(f"Agent {i} → value={v:.4f}, action={a}, log_prob={lp:.4f}")
-
-        # i = 7
-        # v = value[i,0].item()
-        # a = action[i,0].item()
-        # lp = action_log_prob[i,0].item()
-        # print(f"Agent {i} → value={v:.4f}, action={a}, log_prob={lp:.4f}")
-
-        # i = 8
-        # v = value[i,0].item()
-        # a = action[i,0].item()
-        # lp = action_log_prob[i,0].item()
-        # print(f"Agent {i} → value={v:.4f}, action={a}, log_prob={lp:.4f}")
-
-
-        # --- 转换动作为环境格式 ---
-        actions_env = None
-        env_action_space = self.envs.action_space[0]
-        # print(env_action_space.__class__.__name__)
-        if env_action_space.__class__.__name__ == "Discrete":
-            # 离散动作做 one-hot 编码
-            action_indices = actions.astype(int) 
-            if actions.ndim == 3 and actions.shape[-1] == 1:
-                action_indices = action_indices.squeeze(-1)
-            num_actions = env_action_space.n
-            actions_env = np.eye(num_actions)[action_indices] # One-hot 编码
-            # print(f"actions_env:\ttype={type(actions_env)}, shape={actions_env.shape}, dtype={actions_env.dtype}")
-            # print(f"actions_env[0]:\ttype={type(actions_env[0])}, shape={actions_env[0].shape}, dtype={actions_env[0].dtype}")
-        elif env_action_space.__class__.__name__ == "Box":
-            # 连续动作直接传递
-            actions_env = actions 
-        else:
-            print(f"错误: collect 中遇到未知的动作空间类型 {env_action_space.__class__.__name__}")
-            raise NotImplementedError
-
-        return values, actions, action_log_probs, actions_env
-
-
+    # MODIFICATION: `insert` now accepts `bad_masks`
     def insert(self, data: Tuple):
         """
-        将一个时间步收集到的数据插入到 Replay Buffer 中 (来自原 GMPERunner)。
-        Args:
-            data (Tuple): 包含单步数据的元组，顺序应为:
-                        (obs, agent_id, node_obs, adj, rewards, dones, infos,
-                        values, actions, action_log_probs,
-                        rnn_states, rnn_states_critic)
+        将一个时间步收集到的数据插入到 Replay Buffer 中
         """
-        # 解包数据
-        (   obs, agent_id, node_obs, adj,
-            rewards, dones, infos,
-            values, actions, action_log_probs
+        (   obs_t_plus_1, agent_id_t_plus_1, node_obs_t_plus_1, adj_t_plus_1,
+            rewards_t, dones_t, bad_masks_t, infos_t, # dones_t, bad_masks_t are for s_t -> s_t+1 transition
+            values_t, actions_t, action_log_probs_t # These are for s_t
         ) = data
 
-        # TODO --- 处理 Masks ---
-        masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
-        masks[dones == True] = 0.0 # dones 为 True 的地方 mask 为 0
-
-        # --- 构建中心化观测 ---
         if self.use_centralized_V:
-            # 中性化观测相当于扩展了全局维度
-            share_obs = obs.reshape(self.n_rollout_threads, -1)
-            share_obs = np.expand_dims(share_obs, 1).repeat(self.num_agents, axis=1) # (1, N, N*D)
-            share_agent_id = agent_id.reshape(self.n_rollout_threads, -1)
-            share_agent_id = np.expand_dims(share_agent_id, 1).repeat(self.num_agents, axis=1) # (1, N, N)
+            share_obs_t_plus_1 = obs_t_plus_1.reshape(self.n_rollout_threads, -1)
+            share_obs_t_plus_1 = np.expand_dims(share_obs_t_plus_1, 1).repeat(self.num_agents, axis=1)
+            share_agent_id_t_plus_1 = agent_id_t_plus_1.reshape(self.n_rollout_threads, -1)
+            share_agent_id_t_plus_1 = np.expand_dims(share_agent_id_t_plus_1, 1).repeat(self.num_agents, axis=1)
         else:
-            share_obs = obs # (1, N*D)
-            share_agent_id = agent_id # (1, N, N*D)
-
-        # --- 调用 Buffer 的 insert 方法 ---
-        # 关键: 确保参数顺序与 GraphReplayBuffer.insert 定义一致
+            share_obs_t_plus_1 = obs_t_plus_1
+            share_agent_id_t_plus_1 = agent_id_t_plus_1
+        
         self.buffer.insert(
-            share_obs,          # 下一步共享观测
-            obs,                # 下一步个体观测
-            node_obs,           # 下一步节点观测
-            adj,                # 下一步邻接矩阵
-            agent_id,           # 下一步智能体 ID
-            share_agent_id,     # 下一步共享 ID
-            actions,            # *上一步* 动作
-            action_log_probs,   # *上一步* 动作 logp
-            values,             # *上一步* 价值估计
-            rewards,            # 当前步奖励
+            share_obs_t_plus_1,
+            obs_t_plus_1,
+            node_obs_t_plus_1,
+            adj_t_plus_1,
+            agent_id_t_plus_1,
+            share_agent_id_t_plus_1,
+            actions_t,              
+            action_log_probs_t,     
+            values_t,               
+            rewards_t,              
+            dones_t,
+            bad_masks_t # MODIFICATION: Pass bad_masks to buffer's insert method
         )
 
 
-    @torch.no_grad() # 不计算梯度
+    @torch.no_grad()
     def compute(self):
         """计算 GAE 回报和优势 """
-        self.trainer.prep_rollout() # 设置网络为评估模式
-        # 获取 Buffer 中最后一步状态的价值估计
+        self.trainer.prep_rollout()
+        
+        # Get V(s_L) from the policy for bootstrapping GAE
+        # s_L is stored at self.buffer.obs[self.buffer.step] because `insert` increments `step`
+        # AFTER storing s_{t+1} at new_step+1 and a_t, r_t at new_step.
+        # So, after episode_length inserts, self.buffer.step points to where the *next* s_0 (from previous s_L) is.
+        # The actual s_L (last state of the rollout segment) is at (self.buffer.step -1 + L) % L,
+        # and its successor s_{L+1} (or s_0 of next virtual segment) is at self.buffer.step.
+        # The obs for s_L (final state of rollout) is at self.buffer.share_obs[self.buffer.step]
+        # because after_update copies share_obs[L] to share_obs[0] and step becomes 0,
+        # OR if after_update is not called yet, step is L (or 0 if L % L).
+        # More simply: the next_values are for the states stored at index self.buffer.episode_length (which is obs[L+1])
+        # OR, if buffer.step is now 0 after a full rollout, it's self.buffer.obs[0] which contains s_{L+1}.
+        # The buffer.compute_returns expects next_value for the state *after* the last state in the rewards/actions sequence.
+        # The last r_t, a_t are at index self.episode_length-1. Their successor state s_L is at self.obs[self.episode_length].
+        
+        next_values_obs_idx = self.buffer.step # This is where s_{L+1} (or s_0 of next segment) is stored after a full rollout
+                                               # or where s_t is if in middle of rollout.
+                                               # For GAE, we need V(state_after_last_action_in_buffer)
+                                               # The last action is at buffer.actions[episode_length-1].
+                                               # The state it leads to is stored at buffer.obs[episode_length].
+
         next_values = self.trainer.policy.get_values(
-            np.concatenate(self.buffer.share_obs[-1]),
-            np.concatenate(self.buffer.node_obs[-1]),
-            np.concatenate(self.buffer.adj[-1]),
-            np.concatenate(self.buffer.share_agent_id[-1]),
+            np.concatenate(self.buffer.share_obs[self.buffer.episode_length]), # obs for s_L (successor of a_{L-1})
+            np.concatenate(self.buffer.node_obs[self.buffer.episode_length]),
+            np.concatenate(self.buffer.adj[self.buffer.episode_length]),
+            np.concatenate(self.buffer.share_agent_id[self.buffer.episode_length]),
         )
         next_values = np.array(np.split(_t2n(next_values), self.n_rollout_threads))
-        # 调用 Buffer 计算 returns
         self.buffer.compute_returns(next_values, self.trainer.value_normalizer)
 
+    def train(self): # No change here
+        self.trainer.prep_training()
+        train_infos = self.trainer.train(self.buffer)
+        self.buffer.after_update() 
+        return train_infos
 
-    @torch.no_grad() # TODO
+    # process_infos already takes `dones`, which is good.
+    # No change needed for save, restore, eval, log_train, log_env based on this step.
+    # ... (rest of the methods: save, restore, eval, process_infos, log_train, log_env remain the same for now)
+
+
+    @torch.no_grad()
     def eval(self, total_num_steps: int):
-        """执行策略评估 """
-        # 检查是否有评估环境
-        if self.eval_envs is None:
-            print("警告：未设置评估环境，跳过评估。")
+        """
+        执行策略评估，调用独立的评估器。
+        """
+        if self.evaluator is None:
+            if self.eval_envs is None:
+                print("警告：评估环境未初始化 (self.eval_envs is None)，跳过评估。")
+            elif not self.all_args.use_eval:
+                print("配置中禁用了评估 (self.all_args.use_eval is False)，跳过评估。")
+            else:
+                print("警告：评估器未成功初始化，跳过评估。")
             return
 
-        eval_episode_rewards = [] # 记录每个评估回合的总奖励
-        # --- 新增：记录合作率 ---
-        eval_episode_cooperation_rates = []
-        # --- 新增：记录其他可能的 MPGG 指标 ---
-        # eval_episode_final_strategies = [] # 记录最终策略分布等
+        print(f"--- 开始评估 (在训练总步数 {total_num_steps} 时) ---")
+        # 执行评估并获取结果
+        eval_results = self.evaluator.eval_policy() # 返回一个字典
 
-        # 重置评估环境
-        eval_obs, eval_agent_id, eval_node_obs, eval_adj = self.eval_envs.reset()
-
-        # 运行指定数量的评估回合
-        num_eval_episodes_done = 0
-        # 使用列表存储每个线程当前回合的数据
-        episode_rewards = [[] for _ in range(self.n_eval_rollout_threads)]
-        episode_strategies = [[] for _ in range(self.n_eval_rollout_threads)]
-
-        while num_eval_episodes_done < self.all_args.eval_episodes:
-            self.trainer.prep_rollout()
-
-            # --- 获取确定性动作 ---
-            # **修改:** 调用 policy.act 获取动作和 Actor RNN 状态
-            #           Critic RNN 状态不需要在 act 中更新
-            eval_action, eval_rnn_states_actor_next = self.trainer.policy.act(
-                np.concatenate(eval_obs),
-                np.concatenate(eval_node_obs),
-                np.concatenate(eval_adj),
-                np.concatenate(eval_agent_id),
-            )
-            # 更新 Actor RNN 状态
-            # Critic RNN 状态在评估时不更新，保持为 0 或上一步状态（如果需要）
-
-            eval_actions = np.array(np.split(_t2n(eval_action), self.n_eval_rollout_threads))
-
-            # --- 与评估环境交互 ---
-            (
-                eval_obs, eval_agent_id, eval_node_obs, eval_adj,
-                eval_rewards, eval_dones, eval_infos,
-            ) = self.eval_envs.step(eval_actions)
-
-            # --- 记录当前步奖励和策略 ---
-            for thread_id in range(self.n_eval_rollout_threads):
-                episode_rewards[thread_id].append(eval_rewards[thread_id])
-                thread_strategies = []
-                for agent_id in range(self.num_agents):
-                    if agent_id < len(eval_infos[thread_id]) and "strategy" in eval_infos[thread_id][agent_id]:
-                        thread_strategies.append(eval_infos[thread_id][agent_id]["strategy"])
-                    else:
-                        thread_strategies.append(np.nan)
-                episode_strategies[thread_id].append(thread_strategies)
-
-            # --- 处理回合结束 ---
-            eval_dones_env = np.all(eval_dones, axis=1)
-
-            # --- 统计完成的回合 ---
-            for i in range(self.n_eval_rollout_threads):
-                if eval_dones_env[i]:
-                    num_eval_episodes_done += 1
-                    # 计算总奖励 (所有智能体、所有步骤奖励求和)
-                    total_ep_reward = np.sum(np.array(episode_rewards[i]))
-                    eval_episode_rewards.append(total_ep_reward)
-                    # 计算平均合作率
-                    ep_strategies = np.array(episode_strategies[i])
-                    valid_strategies = ep_strategies[~np.isnan(ep_strategies)]
-                    avg_coop_rate = np.mean(valid_strategies) if len(valid_strategies) > 0 else 0
-                    eval_episode_cooperation_rates.append(avg_coop_rate)
-                    # 清空记录
-                    episode_rewards[i] = []
-                    episode_strategies[i] = []
-                    if num_eval_episodes_done >= self.all_args.eval_episodes: break
-            if num_eval_episodes_done >= self.all_args.eval_episodes: break
-
-        # --- 计算评估结果平均值 ---
-        mean_eval_reward = np.mean(eval_episode_rewards) if eval_episode_rewards else 0
-        mean_eval_coop_rate = np.mean(eval_episode_cooperation_rates) if eval_episode_cooperation_rates else 0
-
-        print(f"  评估结果 ({num_eval_episodes_done} 回合):")
-        print(f"    平均回合总奖励: {mean_eval_reward:.3f}")
-        print(f"    平均合作率: {mean_eval_coop_rate:.3f}")
-
-        # --- 记录评估结果 ---
-        eval_env_infos = {
-            "eval_average_episode_rewards": mean_eval_reward,
-            "eval_average_cooperation_rate": mean_eval_coop_rate
-        }
-        self.log_env(eval_env_infos, total_num_steps)
-
-
-    def train(self):
-        """用 Buffer 中的数据训练策略 """
-        self.trainer.prep_training() # 设置网络为训练模式
-        train_infos = self.trainer.train(self.buffer) # 调用 trainer 的训练方法
-        self.buffer.after_update() # 先采一整段轨迹 → 更新网络 → 再采新的一整段
-        return train_infos
+        # 绘制并保存结果图
+        if eval_results:
+            self.evaluator.plot_results(eval_results)
+            # 将评估结果记录到 TensorBoard (如果 writter 可用)
+            self.evaluator.log_data(eval_results, writer=self.writter, total_num_steps=total_num_steps)
+        else:
+            print("评估未产生数据。")
+        print(f"--- 评估结束 (在训练总步数 {total_num_steps} 时) ---")
 
     def save(self):
         """保存策略的 Actor 和 Critic 网络参数 """
@@ -561,102 +447,106 @@ class GMPERunner:
         self.policy.critic.load_state_dict(policy_critic_state_dict)
 
 
-    # TODO
-    def process_infos(self, infos: List[List[Dict]]) -> Dict:
+    # 处理训练时的环境指标
+    # 在 GMPERunner 类中
+    def process_infos(self, infos: List[List[Dict]], dones: arr) -> Dict: # 新增 dones 参数
         """
-        处理环境返回的 info 列表，提取和聚合 MPGG 相关指标。
-        这个函数在每个 rollout 结束时被调用，infos 是最后一个时间步的 info。
-        因此，我们期望环境在最后一个时间步的 info 中包含了整个 episode 的聚合指标。
+        处理在Rollout Segment最后一步收集到的环境信息列表。
+        提取关键指标，并计算在所有并行线程间的平均值。
 
         Args:
-            infos (List[List[Dict]]): 形状 (n_rollout_threads, num_agents) 的字典列表。
-                                      每个字典包含了对应智能体在 episode 结束时的 info。
+            infos (List[List[Dict]]): 形状 (n_rollout_threads, num_agents) 的字典列表，
+                                        包含每个并行环境最后一个时间步的info。
+            dones (arr): 形状 (n_rollout_threads, num_agents) 的布尔数组，
+                        指示每个并行环境在最后一个时间步之后是否终止。
 
         Returns:
-            Dict: 包含聚合后指标的字典，用于 TensorBoard 日志记录。
+            Dict: 包含聚合后指标的字典，用于TensorBoard日志记录。
         """
-        env_infos_to_log = {} # 用于存储最终要记录到 TensorBoard 的指标
+        env_infos_to_log = {} # 用于存储最终要记录到TensorBoard的指标
 
-        # --- 初始化用于累加所有线程的 episode 指标的列表 ---
-        all_ep_social_gdp = []
-        all_ep_avg_reward_per_agent_step = []
-        all_ep_avg_cooperation_rate = []
-        # 也可以收集个体累积奖励的分布等
-        # all_ep_individual_cumulative_rewards = []
+        # --- 用于累积各个线程在Segment最后一步的指标 ---
+        # 步级指标
+        segment_end_step_coop_rates = []
+        segment_end_step_avg_rewards = []
+        
+        # 如果线程在Segment最后一步刚好完成了一个逻辑回合，我们可以记录其回合统计
+        completed_logic_episode_total_rewards = [] # 该逻辑回合的总社会奖励
+        completed_logic_episode_lengths = []       # 该逻辑回合的长度
+        # (合作率的计算需要逻辑回合的总合作数和总步数，或者marl_env在done时直接提供)
 
         num_threads = len(infos)
         if num_threads == 0:
             return env_infos_to_log
 
         for thread_id in range(num_threads):
-            # 对于每个线程，我们通常只需要一个 agent 的 info 来获取 episode 级别的聚合指标，
-            # 因为这些指标是在环境中计算的，并且对于该 episode 内的所有 agent 应该是相同的（如果是系统级指标）。
-            # 或者，我们可以选择第一个 agent 的 info 作为代表。
             if self.num_agents > 0 and len(infos[thread_id]) > 0:
-                # 以第一个 agent 的 info 为例，提取 episode 聚合指标
-                # 假设这些 key 是在 marl_env.py 的 step 方法中，当 is_episode_done 时添加的
-                first_agent_info_in_thread = infos[thread_id][0]
+                # 以第一个智能体的info获取共享的步级指标
+                # infos[thread_id] 是一个包含 num_agents 个字典的列表
+                # infos[thread_id][0] 是该线程第一个智能体在Segment最后一步的info
+                last_step_info_agent0 = infos[thread_id][0] 
 
-                ep_social_gdp = first_agent_info_in_thread.get("episode_social_gdp")
-                if ep_social_gdp is not None:
-                    all_ep_social_gdp.append(ep_social_gdp)
+                # 1. 提取并记录当前Segment最后一步的步级指标
+                step_cr = last_step_info_agent0.get("step_cooperation_rate")
+                if step_cr is not None:
+                    segment_end_step_coop_rates.append(step_cr)
 
-                ep_avg_reward = first_agent_info_in_thread.get("episode_avg_reward_per_agent_step")
-                if ep_avg_reward is not None:
-                    all_ep_avg_reward_per_agent_step.append(ep_avg_reward)
+                step_ar = last_step_info_agent0.get("step_avg_reward")
+                if step_ar is not None:
+                    segment_end_step_avg_rewards.append(step_ar)
 
-                ep_coop_rate = first_agent_info_in_thread.get("episode_avg_cooperation_rate")
-                if ep_coop_rate is not None:
-                    all_ep_avg_cooperation_rate.append(ep_coop_rate)
+                # 2. 检查这个线程是否在当前Rollout Segment的最后一步刚好完成了一个逻辑回合
+                # dones[thread_id] 是一个 (num_agents,) 的布尔数组
+                if dones[thread_id].all(): # 如果这个线程的所有智能体都done了
+                    # 这是一个逻辑回合的结束
+                    
+                    # a. 计算这个完成的逻辑回合的总社会奖励
+                    # total_rewards_count 是从上次reset到当前(done)步的累积个体奖励
+                    ep_thread_total_social_reward = 0
+                    for agent_idx in range(self.num_agents):
+                        if agent_idx < len(infos[thread_id]):
+                            ep_thread_total_social_reward += infos[thread_id][agent_idx].get("total_rewards_count", 0)
+                    completed_logic_episode_total_rewards.append(ep_thread_total_social_reward)
 
-                # 如果需要记录每个 agent 的累积奖励，可以这样做：
-                # for agent_id_local in range(self.num_agents):
-                #     if agent_id_local < len(infos[thread_id]):
-                #         agent_specific_info = infos[thread_id][agent_id_local]
-                #         ind_cum_rew = agent_specific_info.get("episode_individual_cumulative_reward")
-                #         if ind_cum_rew is not None:
-                #             all_ep_individual_cumulative_rewards.append(ind_cum_rew)
-            else:
+                    # b. 获取这个完成的逻辑回合的长度
+                    # marl_env.py 的 info 中有 "current_episode_steps"
+                    ep_len = last_step_info_agent0.get("current_episode_steps") #MODIFED: Will add this to marl_env.py
+                    if ep_len is not None:
+                        completed_logic_episode_lengths.append(ep_len)
+                    
+                    # c. (可选) 计算这个完成的逻辑回合的平均合作率
+                    # 需要: sum over agents (cooperation_counts[agent]) / (num_agents * ep_len)
+                    # 如果 marl_env.py 在 info 中直接提供了 "final_episode_coop_rate" 会更方便
+                    # 否则，我们可以在这里计算：
+                    if ep_len is not None and ep_len > 0:
+                        total_coop_actions_in_ep = 0
+                        for agent_idx in range(self.num_agents):
+                            if agent_idx < len(infos[thread_id]):
+                                total_coop_actions_in_ep += infos[thread_id][agent_idx].get("cooperation_counts", 0)
+                        avg_coop_rate_for_ep = total_coop_actions_in_ep / (self.num_agents * ep_len)
+                        # (这个变量没用到，因为我们下面会用 completed_episode_coop_rates,
+                        # 但逻辑上可以这样计算，或者期望marl_env提供。为简化，我们下面会用segment_end_step_coop_rates)
+                        # 如果要记录这个，需要添加到 completed_episode_coop_rates 列表中
+
+            else: # num_agents <= 0 or len(infos[thread_id]) == 0
                 print(f"警告: process_infos 在 thread {thread_id} 中没有找到足够的 agent info。")
 
+        # --- 计算并记录平均指标 ---
 
-        # --- 计算所有线程的平均值 ---
-        if all_ep_social_gdp:
-            env_infos_to_log["episode/social_gdp_mean"] = np.mean(all_ep_social_gdp)
-            # 也可以记录标准差等
-            # env_infos_to_log["episode/social_gdp_std"] = np.std(all_ep_social_gdp)
-        if all_ep_avg_reward_per_agent_step:
-            env_infos_to_log["episode/avg_reward_per_agent_step_mean"] = np.mean(all_ep_avg_reward_per_agent_step)
-        if all_ep_avg_cooperation_rate:
-            env_infos_to_log["episode/avg_cooperation_rate_mean"] = np.mean(all_ep_avg_cooperation_rate)
+        # 平均最后一步的步级指标
+        if segment_end_step_coop_rates:
+            env_infos_to_log["segment_last_step/mean_cooperation_rate"] = np.mean(segment_end_step_coop_rates)
+        if segment_end_step_avg_rewards:
+            env_infos_to_log["segment_last_step/mean_avg_reward"] = np.mean(segment_end_step_avg_rewards)
 
-        # --- (可选) 记录每一步的平均合作率和平均个体奖励 ---
-        # 这需要从 buffer 中提取数据，或者让环境在每一步的 info 中提供
-        # 这里仅作示例，假设我们想记录最后一个 rollout 中所有 agent 在所有 step 的平均合作率
-        # 注意：buffer 中的数据是 (episode_length+1, n_threads, n_agents, ...)
-        # infos 传入的是最后一个 step 的 info，可能不适合计算 rollout 平均值
-        # 更稳妥的做法是在 Runner 的 run 循环中，在 self.insert(data) 之后，
-        # 实时地从 infos 中提取每一步的合作信息并累加，然后在 log_interval 时计算平均值。
-        # 但为了简化，这里我们只处理 episode 结束时的聚合信息。
-
-        # 简单示例：记录最后一个 step 的系统平均合作率和奖励 (如果 env_infos 中有)
-        # 这部分与之前的 process_infos 逻辑类似，但现在我们更关注 episode 级别的指标
-        step_rewards = []
-        step_strategies = []
-        for thread_infos in infos:
-            for agent_info in thread_infos:
-                 if isinstance(agent_info, dict):
-                    step_rewards.append(agent_info.get("individual_reward_step", np.nan))
-                    step_strategies.append(agent_info.get("strategy_step", np.nan))
-
-        valid_step_rewards = [r for r in step_rewards if not np.isnan(r)]
-        valid_step_strategies = [s for s in step_strategies if not np.isnan(s)]
-
-        if valid_step_rewards:
-            env_infos_to_log["step/mean_reward"] = np.mean(valid_step_rewards)
-        if valid_step_strategies:
-            env_infos_to_log["step/cooperation_rate"] = np.mean(valid_step_strategies)
-
+        # 平均那些在Segment末尾刚好完成的逻辑回合的指标
+        if completed_logic_episode_total_rewards:
+            env_infos_to_log["completed_episode/mean_total_reward"] = np.mean(completed_logic_episode_total_rewards)
+        if completed_logic_episode_lengths:
+            env_infos_to_log["completed_episode/mean_length"] = np.mean(completed_logic_episode_lengths)
+        
+        # 记录在这个Rollout Segment中，有多少个并行环境完成了至少一个逻辑回合
+        env_infos_to_log["completed_episode/num_in_segment"] = len(completed_logic_episode_total_rewards)
 
         return env_infos_to_log
 

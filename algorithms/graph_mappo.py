@@ -99,7 +99,6 @@ class GR_MAPPO():
 
         return value_loss
     
-    @torch.amp.autocast(device_type='cuda')
     def ppo_update(self, 
                 sample:Tuple, 
                 update_actor:bool=True) -> Tuple[Tensor, Tensor, 
@@ -234,10 +233,9 @@ class GR_MAPPO():
                                                 buffer.value_preds[:-1])
         else:
             advantages = buffer.returns[:-1] - buffer.value_preds[:-1]
-        advantages_copy = advantages.copy()
-        advantages_copy[buffer.active_masks[:-1] == 0.0] = np.nan
-        mean_advantages = np.nanmean(advantages_copy)
-        std_advantages = np.nanstd(advantages_copy)
+
+        mean_advantages = np.nanmean(advantages)
+        std_advantages = np.nanstd(advantages)
         advantages = (advantages - mean_advantages) / (std_advantages + 1e-5)
         
 

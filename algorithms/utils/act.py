@@ -3,7 +3,7 @@ Modules to compute actions. Basically the final layer in the network.
 This imports modified probability distribution layers wherein we can give action
 masks to re-normalise the probability distributions
 """
-from .distributions import Bernoulli, Categorical, DiagGaussian
+from .distributions import Categorical, DiagGaussian
 import torch
 import torch.nn as nn
 from typing import Optional

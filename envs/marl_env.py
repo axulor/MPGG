@@ -1,93 +1,89 @@
-# --- START OF FILE marl_env.py (修改版) ---
+# --- START OF FILE marl_env.py ---
 
-import gym
+import gymnasium as gym
 from gym import spaces
 import numpy as np
 from numpy import ndarray as arr
-# from scipy import sparse # 在当前 MPGG 实现中似乎未使用
 import argparse # 确保导入，即使 __init__ 中用的是 SimpleNamespace
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict
+import random
+from gymnasium.utils import seeding  # 用于环境随机种子的设置
+from collections import deque 
 
 # ==============================================================================
-# == Agent Class Definition (保持不变) ==
+# == Agent Class Definition  ==
 # ==============================================================================
 class Agent:
     def __init__(self):
-        self.id = None
-        self.name = None
-        self.pos = np.zeros(2, dtype=np.float32)
-        self.vel = np.zeros(2, dtype=np.float32)
-        self.strategy = np.array([0], dtype=np.int32)
-        self.last_payoff = np.array([0.0], dtype=np.float32)
-        self.action = np.zeros(2, dtype=np.float32)
+        self.id = None      # int
+        self.name = None    # 字符串
+        self.position = np.zeros(2, dtype=np.float32) # 位置
+        self.direction_vector = np.zeros(2, dtype=np.float32) # 方向向量
+        self.strategy = np.array([0], dtype=np.int32) # 0 for defector, 1 for cooperator
+        self.current_payoff = np.array([0.0], dtype=np.float32) # 收益
 
 # ==============================================================================
-# == Merged MultiAgentGraphEnv Class Definition (修改版) ==
+# == MultiAgentGraphEnv Class Definition  ==
 # ==============================================================================
 class MultiAgentGraphEnv(gym.Env):
     metadata = {"render.modes": ["human", "rgb_array"]}
 
-    def __init__(self, args: argparse.Namespace): # 参数类型改为 argparse.Namespace 以匹配原始定义
+    def __init__(self, args: argparse.Namespace): # 类型为 argparse.Namespace
         super().__init__()
-        # --- 1. 参数初始化 (基本不变) ---
+        # --- 1. 参数初始化 ---
         self.num_agents = args.num_agents
         self.world_size = args.world_size
         self.speed = args.speed
-        self.max_cycles = args.max_cycles # 环境内在上限
+        # self.episode_length = args.episode_length # 环境内部不需要知道runner的rollout segment长度
         self.radius = args.radius
         self.cost = args.cost
         self.r = args.r
         self.beta = args.beta
-        self.discrete_action = args.discrete_action
-        # self.scenario_name = args.scenario_name # 如果 train_mpgg.py 中不再定义，这里也不需要
+        self.env_max_steps = args.env_max_steps           # 环境最大步数限制
+        self.cooperation_lower_threshold = args.cooperation_lower_threshold         # 最低合作率限制
+        self.cooperation_upper_threshold = args.cooperation_upper_threshold         # 最高合作率限制
+        self.sustain_duration = args.sustain_duration   # 合作率超出合理区间限制
+        self.seed_val = args.seed # Store seed value for re-seeding if necessary
+        self.seed(args.seed)
 
-        # --- 2. 初始化智能体列表 (不变) ---
+
+        # --- 2. 初始化智能体列表 ---
         self.agents = [Agent() for _ in range(self.num_agents)]
         for i, agent in enumerate(self.agents):
             agent.id = i
             agent.name = f"agent_{i}"
 
         # --- 3. 初始化环境状态 ---
-        self.current_step_in_episode = 0 # 当前 episode 内部的步数
+        self.current_episode_steps = 0 # MODIFICATION: Renamed from current_step for clarity
+        self.total_rewards_in_episode = np.zeros(self.num_agents, dtype=np.float32) # MODIFICATION: Tracks rewards within a LOGICAL episode
+        self.cooperation_counts_in_episode = np.zeros(self.num_agents, dtype=np.int32) # MODIFICATION: Tracks coop counts within a LOGICAL episode
+        self.cooperation_rate_deque = deque(maxlen=self.sustain_duration) 
 
-        # --- 新增：用于累积 episode 级别指标的属性 ---
-        self.episode_total_rewards = np.zeros(self.num_agents, dtype=np.float32)
-        self.episode_cooperation_counts = np.zeros(self.num_agents, dtype=np.int32) # 记录每个 agent 合作的次数
-        self.episode_steps_count = 0 # 记录当前 episode 实际运行的步数 (可能小于 max_cycles)
-
-        # --- 4. 图和距离属性 (不变) ---
+        # --- 4. 图和距离属性 ---
         self.edge_list = None
         self.edge_weight = None
-        self.cached_dist_vect = None
         self.cached_dist_mag = None
-        self.cache_dists = True
 
-        # --- 5. 配置 Gym 空间 (基本不变) ---
-        if self.discrete_action:
-            self.agent_action_space = spaces.Discrete(5)
-        else:
-            self.agent_action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+        # --- 5. 配置 Gym 空间  ---
+        self.agent_action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
         self.action_space = [self.agent_action_space] * self.num_agents
 
-        _temp_agent = Agent() # 用于获取特征维度
-        # _temp_agent的属性需要与实际Agent一致，以获取正确的obs_dim
-        _temp_agent.pos = np.zeros(2); _temp_agent.vel = np.zeros(2)
-        _temp_agent.strategy = np.array([0]); _temp_agent.last_payoff = np.array([0.0])
-        _obs_sample = self._get_agent_feat(_temp_agent) # _get_agent_feat 不再包含实体ID
-        obs_dim = _obs_sample.shape[0] # 现在是 6 维
+        temp_agent = Agent() 
+        temp_agent.position = np.zeros(2); temp_agent.direction_vector = np.zeros(2)
+        temp_agent.strategy = np.array([0]); temp_agent.current_payoff = np.array([0.0])
+        obs_sample = self.get_agent_feat(temp_agent) 
+        obs_dim = obs_sample.shape[0]
 
         self.agent_observation_space = spaces.Box(low=-np.inf, high=+np.inf, shape=(obs_dim,), dtype=np.float32)
         self.observation_space = [self.agent_observation_space] * self.num_agents
 
         share_obs_dim = obs_dim * self.num_agents
-        self.share_observation_space = [
-            spaces.Box(low=-np.inf, high=+np.inf, shape=(share_obs_dim,), dtype=np.float32)
-        ] * self.num_agents
+        self.share_observation_space = [spaces.Box(low=-np.inf, high=+np.inf, shape=(share_obs_dim,), dtype=np.float32)] * self.num_agents
 
-        node_obs_dim_tuple = (self.num_agents, obs_dim) # Gym space shape is tuple
+        node_obs_dim_tuple = (self.num_agents, obs_dim) 
         adj_dim_tuple = (self.num_agents, self.num_agents)
         agent_id_dim_tuple = (1,)
-        edge_dim_tuple = (1,) # 假设边特征是标量（例如距离）
+        edge_dim_tuple = (1,) 
 
         self.node_observation_space = [spaces.Box(low=-np.inf, high=+np.inf, shape=node_obs_dim_tuple, dtype=np.float32)] * self.num_agents
         self.adj_observation_space = [spaces.Box(low=0, high=+np.inf, shape=adj_dim_tuple, dtype=np.float32)] * self.num_agents
@@ -97,261 +93,238 @@ class MultiAgentGraphEnv(gym.Env):
         ] * self.num_agents
         self.edge_observation_space = [spaces.Box(low=-np.inf, high=+np.inf, shape=edge_dim_tuple, dtype=np.float32)] * self.num_agents
 
+
     def seed(self, seed=None):
-        np.random.seed(seed) # Gym 标准推荐这样设置
+        self.seed_val = seed # Store the seed
+        self.np_random, seed = seeding.np_random(seed)
+        random.seed(seed)
+        return seed
 
     def reset(self) -> Tuple[List[arr], List[arr], List[arr], List[arr]]:
-        self.current_step_in_episode = 0 # 重置 episode 内部步数
+        self.cooperation_rate_deque.clear() 
+        self.total_rewards_in_episode.fill(0.0) # MODIFICATION: Reset episode-specific counters
+        self.cooperation_counts_in_episode.fill(0) # MODIFICATION: Reset episode-specific counters
+        self.current_episode_steps = 0 # MODIFICATION: Reset episode step counter
 
-        # --- 重置累加器 ---
-        self.episode_total_rewards.fill(0.0)
-        self.episode_cooperation_counts.fill(0)
-        self.episode_steps_count = 0
-        # --------------------
-
-        shuffled_agents = list(self.agents)
-        np.random.shuffle(shuffled_agents)
-        half = (self.num_agents + 1) // 2
-        cooperators = set(shuffled_agents[:half])
-
+        shuffled_agents = list(self.agents) 
+        self.np_random.shuffle(shuffled_agents) 
+        half = (self.num_agents + 1) // 2  
+        cooperators = set(shuffled_agents[:half])                                                 
         for agent in self.agents:
-            agent.pos = np.random.rand(2) * self.world_size
-            theta = np.random.rand() * 2 * np.pi
-            agent.vel = self.speed * np.array([np.cos(theta), np.sin(theta)])
-            agent.last_payoff = np.array([0.0], dtype=np.float32)
+            agent.position = self.np_random.random(2) * self.world_size 
+            theta = self.np_random.random() * 2 * np.pi
+            agent.direction_vector[0] = np.cos(theta)
+            agent.direction_vector[1] = np.sin(theta)
+            agent.current_payoff = np.array([0.0], dtype=np.float32)
             agent.strategy = np.array([1 if agent in cooperators else 0], dtype=np.int32)
-            agent.action = np.zeros(2, dtype=np.float32)
 
         self.calculate_distances()
-        self.update_graph() # 更新图结构以获取正确的初始 adj
+        self.update_graph()
 
-        obs_n = [self._get_obs(agent) for agent in self.agents]
-        agent_id_n = [self._get_id(agent) for agent in self.agents]
-        node_obs_n_all, adj_n_all = self._get_graph_obs()
-
+        obs_n = [self.get_obs(agent) for agent in self.agents]
+        agent_id_n = [self.get_id(agent) for agent in self.agents]
+        node_obs_n_all, adj_n_all = self.get_graph_obs()
         node_obs_n = [node_obs_n_all] * self.num_agents
         adj_n = [adj_n_all] * self.num_agents
-
+        
         return obs_n, agent_id_n, node_obs_n, adj_n
-
+    
+    def check_cooperation_rate(self, current_cooperation_rate: float) -> bool:
+        self.cooperation_rate_deque.append(current_cooperation_rate)
+        if len(self.cooperation_rate_deque) < self.sustain_duration:
+            return False
+        all_below_lower = all(rate < self.cooperation_lower_threshold for rate in self.cooperation_rate_deque)
+        all_above_upper = all(rate > self.cooperation_upper_threshold for rate in self.cooperation_rate_deque)
+        return all_below_lower or all_above_upper
+    
     def step(self, action_n: List) -> Tuple[List[arr], List[arr], List[arr], List[arr], List[arr], List[bool], List[Dict]]:
-        self.current_step_in_episode += 1
-        self.episode_steps_count +=1 # 记录实际运行的步数
+        self.current_episode_steps += 1 # MODIFICATION: Increment episode step counter
 
         for i, agent in enumerate(self.agents):
-            self._set_action(action_n[i], agent, self.action_space[i])
+            self.update_direction_vector(action_n[i], agent)
+            agent.position = (agent.position + agent.direction_vector * self.speed) % self.world_size
 
-        for agent in self.agents:
-            if self.discrete_action:
-                 agent.vel = agent.action * self.speed
-            else:
-                 agent.vel = agent.action * self.speed
-            agent.pos = (agent.pos + agent.vel) % self.world_size
+        self.calculate_distances()
+        self.update_graph()
 
-        payoffs = self._compute_payoffs()
-        self._record_payoffs(payoffs) # agent.last_payoff 更新
-        self._update_strategies(payoffs) # agent.strategy 更新
+        payoffs = self.compute_payoffs()
+        self.record_payoffs(payoffs) 
+        self.update_strategies(payoffs) 
 
-        # --- 累积当前步的奖励和合作状态 ---
-        current_step_rewards = np.zeros(self.num_agents, dtype=np.float32)
-        for i, agent in enumerate(self.agents):
-            current_step_rewards[i] = agent.last_payoff[0] # 获取刚记录的收益作为本步奖励
-            self.episode_total_rewards[i] += current_step_rewards[i]
-            if agent.strategy[0] == 1: # 如果合作
-                self.episode_cooperation_counts[i] += 1
-        # ----------------------------------
-
-        if self.cache_dists:
-            self.calculate_distances()
-            self.update_graph()
-
-        obs_n = [self._get_obs(agent) for agent in self.agents]
-        agent_id_n = [self._get_id(agent) for agent in self.agents]
-        node_obs_n_all, adj_n_all = self._get_graph_obs()
+        obs_n = [self.get_obs(agent) for agent in self.agents]
+        agent_id_n = [self.get_id(agent) for agent in self.agents]
+        node_obs_n_all, adj_n_all = self.get_graph_obs()
         node_obs_n = [node_obs_n_all] * self.num_agents
         adj_n = [adj_n_all] * self.num_agents
 
-        reward_n_for_buffer = [] # 用于存入 Buffer 的奖励列表 (每个元素是 shape (1,) 的数组)
-        done_n = []
-        info_n = [] # 用于存储每个 agent 的 info 字典
+        num_cooperator = sum(1 for agent in self.agents if agent.strategy[0] == 1)
+        current_cooperation_rate = num_cooperator / self.num_agents if self.num_agents > 0 else 0.0
+        current_total_reward = sum(agent.current_payoff[0] for agent in self.agents)
+        current_avg_reward = current_total_reward / self.num_agents if self.num_agents > 0 else 0.0
 
-        # 判断是否达到环境的 max_cycles
-        is_episode_done = (self.current_step_in_episode >= self.max_cycles)
-
+        current_step_payoffs = np.array([agent.current_payoff[0] for agent in self.agents], dtype=np.float32)
         for i, agent in enumerate(self.agents):
-            reward_n_for_buffer.append(np.array([current_step_rewards[i]], dtype=np.float32)) # Buffer 需要 (1,) 形状
-            done_n.append(is_episode_done) # 所有 agent 同时 done
+            self.total_rewards_in_episode[i] += current_step_payoffs[i] # MODIFICATION: Accumulate for current LOGICAL episode
+            if agent.strategy[0] == 1:
+                self.cooperation_counts_in_episode[i] += 1 # MODIFICATION: Accumulate for current LOGICAL episode
 
-            agent_info = {
-                "individual_reward_step": current_step_rewards[i], # 当前步骤的个体奖励
-                "strategy_step": agent.strategy[0], # 当前步骤的策略
+        terminate_by_rate = self.check_cooperation_rate(current_cooperation_rate)
+        terminate_by_timeout = (self.current_episode_steps >= self.env_max_steps)
+        
+        is_logic_done = terminate_by_rate or terminate_by_timeout # This is the "logical" done for an episode
+        
+        # MODIFICATION START: Add is_absorb_state to info
+        is_absorb_state = False
+        if is_logic_done: # Only check for absorb state if the episode is logically done
+            if terminate_by_rate: # if done by rate, it's an absorb state by definition here
+                 is_absorb_state = True
+            # Could add more sophisticated checks for absorb state if needed,
+            # e.g. if cooperation rate is 0 or 1 for X steps even if not hitting sustain_duration for *extreme* rates
+        # MODIFICATION END
+
+        reward_n = []
+        done_n = [] # This will be the logical done signal for each agent
+        info_n = []
+
+        for i in range(self.num_agents):
+            reward_n.append(np.array([current_step_payoffs[i]], dtype=np.float32))
+            done_n.append(is_logic_done) 
+
+            agent_i_info = {
+                "step_cooperation_rate": current_cooperation_rate,
+                "step_avg_reward": current_avg_reward,
+                "bad_mask_indicator": True, # Always True for GAE in non-terminating (or pseudo-terminating) envs
+                "is_absorb_state": is_absorb_state, # MODIFICATION: Added flag
+                "current_episode_steps": self.current_episode_steps, # MODIFICATION: Added current logical episode steps
+                # Episode statistics are added if is_logic_done is True
+                "episode_total_reward_agent": self.total_rewards_in_episode[i] if is_logic_done else None,
+                "episode_coop_count_agent": self.cooperation_counts_in_episode[i] if is_logic_done else None,
+                "episode_length": self.current_episode_steps if is_logic_done else None,
             }
-            # --- 如果 episode 结束，添加聚合指标到 info ---
-            if is_episode_done:
-                # 1. 总累积奖励 (Social GDP for this agent's perspective, or for the whole system)
-                #    这里我们放入整个系统的总累积奖励
-                agent_info["episode_social_gdp"] = np.sum(self.episode_total_rewards)
+            # If the episode is logically done, we might want to add aggregated episode stats to agent 0's info for logging
+            if i == 0 and is_logic_done:
+                agent_i_info["episode_mean_cooperation_rate"] = np.sum(self.cooperation_counts_in_episode) / (self.num_agents * self.current_episode_steps) if self.num_agents * self.current_episode_steps > 0 else 0
+                agent_i_info["episode_total_social_reward"] = np.sum(self.total_rewards_in_episode)
 
-                # 2. 平均每步每智能体奖励
-                if self.episode_steps_count > 0:
-                    agent_info["episode_avg_reward_per_agent_step"] = np.sum(self.episode_total_rewards) / (self.num_agents * self.episode_steps_count)
-                else:
-                    agent_info["episode_avg_reward_per_agent_step"] = 0.0
+            info_n.append(agent_i_info)
+        
+        # If a logical episode is done, the internal state for the *next* call to step()
+        # (if the runner decides to continue without reset) should reflect a new logical episode.
+        # However, the actual reset of counters (like self.current_episode_steps) happens in self.reset().
+        # The VecEnv wrapper, if not resetting, will just continue calling step on this env instance.
+        # So, if is_logic_done is True, the *next* step taken by this env instance (if not reset by VecEnv)
+        # will effectively be step 1 of a new logical episode.
+        # This means the episode counters should be reset here if we want them to be accurate for a *new* logical episode
+        # that starts *without* an explicit env.reset() call from the Runner.
+        # This is tricky. Standard gym envs reset all state in env.reset().
+        # If the Runner doesn't call reset, then these counters will just keep accumulating across logical episodes
+        # until an explicit reset. This is usually fine, as the Runner gets the 'episode_length' from info
+        # when 'is_logic_done' is true, and can use that.
+        # For now, let's assume Runner uses the info at 'is_logic_done' and then Buffer handles segments.
+        # The counters (self.total_rewards_in_episode, etc.) will be reset only upon an explicit env.reset().
 
-                # 3. 平均合作率
-                #    计算的是所有智能体在整个 episode 中的平均合作次数比例
-                if self.episode_steps_count > 0:
-                     agent_info["episode_avg_cooperation_rate"] = np.sum(self.episode_cooperation_counts) / (self.num_agents * self.episode_steps_count)
-                else:
-                     agent_info["episode_avg_cooperation_rate"] = 0.0
+        return obs_n, agent_id_n, node_obs_n, adj_n, reward_n, done_n, info_n
 
-                # 也可以添加个体累积奖励
-                agent_info["episode_individual_cumulative_reward"] = self.episode_total_rewards[i]
-
-            info_n.append(agent_info)
-            # ----------------------------------------------
-
-        # 如果 episode 结束，重置 episode 内部步数计数器，为下一个 VecEnv 的 reset 做准备
-        # （虽然 DummyVecEnv 会在 done 后自动 reset，但 SubprocVecEnv 的 worker 也会）
-        if is_episode_done:
-            self.current_step_in_episode = 0 # 重置，这样如果 Runner 的 episode_length > max_cycles，也能正确处理
-            # 累加器在下一次环境 reset 时重置
-
-        return obs_n, agent_id_n, node_obs_n, adj_n, reward_n_for_buffer, done_n, info_n
-
-    # --- 核心博弈逻辑 (calculate_distances, _compute_payoffs, _update_strategies, _record_payoffs) ---
-    # --- 这些方法保持不变 ---
     def calculate_distances(self):
-        num_entities = len(self.agents)
-        positions = np.array([agent.pos for agent in self.agents])
+        positions = np.array([agent.position for agent in self.agents])
         delta = positions[:, np.newaxis, :] - positions[np.newaxis, :, :]
-        delta = (delta + self.world_size / 2) % self.world_size - self.world_size / 2
-        self.cached_dist_vect = delta
-        self.cached_dist_mag = np.linalg.norm(delta, axis=2)
+        delta = (delta + self.world_size / 2) % self.world_size - self.world_size / 2 
+        self.cached_dist_mag = np.linalg.norm(delta, axis=2) 
 
-    def _compute_payoffs(self) -> Dict[int, float]:
+    def compute_payoffs(self) -> Dict[int, float]:
         N = self.num_agents
         payoffs = {i: 0.0 for i in range(N)}
         dmat = self.cached_dist_mag
         for i in range(N):
-            dists = dmat[i]
-            group_indices = np.where(dists <= self.radius)[0]
-            if len(group_indices) == 0: continue
-            contrib = sum(int(self.agents[j].strategy[0]) * self.cost for j in group_indices)
-            pool = contrib * self.r
-            share = pool / len(group_indices) if len(group_indices) > 0 else 0.0
-            for j in group_indices:
-                cost_paid = self.cost if self.agents[j].strategy[0] == 1 else 0.0
-                payoffs[j] += share - cost_paid
+            group_indices_for_game_i = np.where(dmat[i] <= self.radius)[0] 
+            if len(group_indices_for_game_i) == 0:
+                continue 
+            total_contribution_in_group_i = 0
+            for member_idx in group_indices_for_game_i:
+                if self.agents[member_idx].strategy[0] == 1: 
+                    total_contribution_in_group_i += self.cost
+            pool_amount_from_group_i = total_contribution_in_group_i * self.r
+            if len(group_indices_for_game_i) > 0:
+                share_per_member_from_group_i = pool_amount_from_group_i / len(group_indices_for_game_i)
+            else:
+                share_per_member_from_group_i = 0.0
+            if share_per_member_from_group_i > 0 or total_contribution_in_group_i > 0: 
+                for member_idx in group_indices_for_game_i:
+                    payoff_from_this_game = share_per_member_from_group_i 
+                    if self.agents[member_idx].strategy[0] == 1:
+                        payoff_from_this_game -= self.cost
+                    payoffs[member_idx] += payoff_from_this_game
         return payoffs
 
-    def _update_strategies(self, payoffs: Dict[int, float]):
+    def update_strategies(self, payoffs: Dict[int, float]):
         N = self.num_agents
         dmat = self.cached_dist_mag
         next_strategies = [agent.strategy.copy() for agent in self.agents]
+        current_payoffs_arr = np.array([payoffs[i] for i in range(N)]) 
         for i in range(N):
-            dists = dmat[i]
-            neighbor_indices = np.where((dists > 0) & (dists <= self.radius))[0]
-            if len(neighbor_indices) == 0: continue
-            j = np.random.choice(neighbor_indices)
-            delta_payoff = payoffs[j] - payoffs[i]
+            neighbor_indices = np.where((dmat[i] > 0) & (dmat[i] <= self.radius))[0]
+            if len(neighbor_indices) == 0: 
+                continue
+            j = self.np_random.choice(neighbor_indices)
+            delta_payoff = current_payoffs_arr[j] - current_payoffs_arr[i]
             prob_adopt = 1 / (1 + np.exp(-self.beta * delta_payoff))
-            if np.random.rand() < prob_adopt:
+            if self.np_random.random() < prob_adopt:
                 next_strategies[i] = self.agents[j].strategy.copy()
         for i, agent in enumerate(self.agents):
             agent.strategy = next_strategies[i]
 
-    def _record_payoffs(self, payoffs: Dict[int, float]):
+    def record_payoffs(self, payoffs: Dict[int, float]):
         for i, ai in enumerate(self.agents):
-            ai.last_payoff = np.array([payoffs[i]], dtype=np.float32)
+            ai.current_payoff = np.array([payoffs[i]], dtype=np.float32)
 
-    # --- 图更新逻辑 (不变) ---
     def update_graph(self):
         if self.cached_dist_mag is None: self.calculate_distances()
         dists = self.cached_dist_mag
         connect_mask = (dists > 0) & (dists <= self.radius)
         row, col = np.where(connect_mask)
-        self.edge_list = np.stack([row, col]) # 已经是 (2, E)
+        self.edge_list = np.stack([row, col]) 
         self.edge_weight = dists[row, col]
 
-    # --- 观测、ID、图观测、动作设置 (主要修改 _get_agent_feat) ---
-    def _get_agent_feat(self, agent: Agent) -> arr:
-        """
-        构造指定智能体的节点/局部特征向量 (float32)。
-        现在不包含实体类型 ID。
-        """
-        pos = agent.pos / self.world_size
-        vel = np.clip(agent.vel / (self.speed + 1e-8), -1.0, 1.0)
-        strategy = agent.strategy
-        last_payoff = agent.last_payoff
-
+    def get_agent_feat(self, agent: Agent) -> arr:       
+        position = agent.position / self.world_size 
+        direction_vector = agent.direction_vector 
+        strategy = agent.strategy 
+        current_payoff = agent.current_payoff
         features = np.hstack([
-            pos.flatten(),          # (2,)
-            vel.flatten(),          # (2,)
-            strategy.flatten(),     # (1,)
-            last_payoff.flatten(),  # (1,)
-        ]).astype(np.float32)       # 总维度现在是 6
-
-        if np.isnan(features).any() or np.isinf(features).any():
-            print(f"警告: agent {agent.id} 的特征中发现 NaN/Inf！已替换为 0。")
-            features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+            position.flatten(),
+            direction_vector.flatten(),
+            strategy.astype(np.float32).flatten(), 
+            current_payoff.flatten(),
+        ]).astype(np.float32)
         return features
 
-    def _get_obs(self, agent: Agent) -> arr:
-        return self._get_agent_feat(agent)
+    def get_obs(self, agent: Agent) -> arr:
+        return self.get_agent_feat(agent)
 
-    def _get_reward(self, agent: Agent) -> np.ndarray:
-        # 这个函数现在不直接被 Runner 使用，奖励在 step 中处理并放入 reward_n_for_buffer
-        # 但可以保留，如果其他地方需要单步奖励
-        return np.array([float(agent.last_payoff[0])], dtype=np.float32)
+    def get_reward(self, agent: Agent) -> np.ndarray:
+        return np.array([float(agent.current_payoff[0])], dtype=np.float32)
 
-    def _get_done(self, agent: Agent) -> bool: # agent 参数保留，但所有 agent 同时 done
-        # 这个函数现在也不直接被 Runner 使用，done 在 step 中统一处理
-        return self.current_step_in_episode >= self.max_cycles
-
-    def _get_info(self, agent: Agent) -> Dict:
-        # 这个函数现在在 step 中被调用来构建 agent_info
-        # 返回的是单步信息，episode 聚合信息在 step 中添加到 agent_info
-        return {
-            "individual_reward_step": float(agent.last_payoff[0]),
-            "strategy_step": int(agent.strategy[0]),
-        }
-
-    def _get_id(self, agent: Agent) -> arr:
+    def get_id(self, agent: Agent) -> arr:
         return np.array([agent.id], dtype=np.int32)
 
-    def _get_graph_obs(self) -> Tuple[arr, arr]:
-        node_features = [self._get_agent_feat(agent) for agent in self.agents]
+    def get_graph_obs(self) -> Tuple[arr, arr]:
+        node_features = [self.get_agent_feat(agent) for agent in self.agents]
         node_obs = np.array(node_features, dtype=np.float32)
-        adj = self.cached_dist_mag.astype(np.float32) if self.cached_dist_mag is not None else \
-              np.zeros((self.num_agents, self.num_agents), dtype=np.float32) # 处理未初始化情况
+        adj = self.cached_dist_mag.astype(np.float32)
         return node_obs, adj
 
-    def _set_action(self, action, agent: Agent, action_space) -> None:
-        # _set_action 逻辑保持不变 (基于上次修正后的版本)
-        agent.action = np.zeros(2, dtype=np.float32)
-        if isinstance(action, (list, tuple)): current_action = np.array(action)
-        else: current_action = action
-
-        if self.discrete_action:
-            action_idx = 0
-            if isinstance(current_action, np.ndarray):
-                if current_action.size == 1: action_idx = int(current_action.item())
-                else: action_idx = np.argmax(current_action)
+    def update_direction_vector(self, action: arr, agent: Agent) -> None:
+        if not isinstance(action, np.ndarray):
+            action_vec = np.array(action, dtype=np.float32)
+        else:
+            action_vec = action.astype(np.float32)
+        action_vec = action_vec.flatten()
+        if action_vec.shape[0] == 2:
+            norm = np.linalg.norm(action_vec)
+            if norm > 1e-7: 
+                agent.direction_vector = action_vec / norm
             else:
-                try: action_idx = int(current_action)
-                except (TypeError, ValueError): action_idx = 0
-            direction = {0:(0.0,0.0), 1:(-1.0,0.0), 2:(1.0,0.0), 3:(0.0,-1.0), 4:(0.0,1.0)}
-            if action_idx in direction:
-                dx, dy = direction[action_idx]
-                agent.action[0], agent.action[1] = dx, dy
-        else: # 连续动作
-            try:
-                cont_action = np.array(current_action, dtype=np.float32).flatten()
-                if cont_action.shape[0] == 2:
-                    agent.action = np.clip(cont_action, -1.0, 1.0) # 假设动作是归一化的速度比例
-                elif cont_action.shape[0] == 1: # 如果只收到一个值，默认控制x轴
-                    agent.action[0] = np.clip(cont_action[0], -1.0, 1.0)
-            except (TypeError, ValueError): pass # 保持 agent.action 为 [0,0]
-
-# --- END OF FILE marl_env.py ---
+                agent.direction_vector = np.array([0.0, 0.0], dtype=np.float32)
+        else:
+            print(f"警告: Agent {agent.id} 的 update_direction_vector 收到形状无效的连续动作 {action_vec} (期望形状 (2,)), 方向设为不动。")
+            agent.direction_vector = np.array([0.0, 0.0], dtype=np.float32)
