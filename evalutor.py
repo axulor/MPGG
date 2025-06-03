@@ -36,7 +36,6 @@ DEFAULT_SEED = 42
 DEFAULT_ENV_MAX_STEPS = DEFAULT_EPISODE_LENGTH
 DEFAULT_COOP_LOWER_THRESHOLD = 0.01
 DEFAULT_COOP_UPPER_THRESHOLD = 0.99
-DEFAULT_SUSTAIN_DURATION = 50
 
 # --- 评估参数 ---
 NUM_PARALLEL_ENVS = 8
@@ -94,8 +93,8 @@ MARL_MODEL_ARGS = argparse.Namespace(
 )
 
 # 模型路径
-ACTOR_MODEL_PATH = r"D:\DESKTOP\RL\MPGG\results\local_optimized_N25_L128_H64_GNNH64_Ent0.01\run3\models\actor.pt"
-CRITIC_MODEL_PATH = r"D:\DESKTOP\RL\MPGG\results\local_optimized_N25_L128_H64_GNNH64_Ent0.01\run3\models\critic.pt"
+ACTOR_MODEL_PATH = r"D:\DESKTOP\RL\MPGG\results\run27\run5_50\models\actor.pt"
+CRITIC_MODEL_PATH = r"D:\DESKTOP\RL\MPGG\results\run27\run5_50\models\critic.pt"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def get_env_args(seed_for_env_init=None):
@@ -110,9 +109,6 @@ def get_env_args(seed_for_env_init=None):
     args.beta = DEFAULT_BETA
     args.seed = seed_for_env_init if seed_for_env_init is not None else DEFAULT_SEED
     args.env_max_steps = DEFAULT_ENV_MAX_STEPS
-    args.cooperation_lower_threshold = DEFAULT_COOP_LOWER_THRESHOLD
-    args.cooperation_upper_threshold = DEFAULT_COOP_UPPER_THRESHOLD
-    args.sustain_duration = DEFAULT_SUSTAIN_DURATION
     return args
 
 def static_policy(num_agents, agent_action_space, current_obs_package=None):

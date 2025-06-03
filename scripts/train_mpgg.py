@@ -27,7 +27,7 @@ sys.path.append(project_root)
 
 # 明确导入所需模块
 from envs.marl_env import MultiAgentGraphEnv # 导入 MPGG 环境类
-from envs.env_wrappers import GraphDummyVecEnv, GraphSubprocVecEnv # 导入两种 VecEnv 环境包装器
+from envs.env_wrappers import GraphSubprocVecEnv # 导入并行环境包装器
 from runner.graph_mpe_runner import GMPERunner as Runner # 导入图环境 Runner
 from utils.util import print_box, print_args # 打印工具
 
@@ -35,38 +35,31 @@ from utils.util import print_box, print_args # 打印工具
 # == 1. 参数配置 (硬编码所有最终参数) ==
 # ==============================================================================
 # 使用 SimpleNamespace 创建配置对象 all_args，包含所有必需的参数。
-# 值基于 .bat 脚本指定 和 config.py 默认值，并应用了之前的关键修正。
 all_args = SimpleNamespace(
     # --- 实验标识与基本设置 ---
     user_name="local_optimized",      # MODIFICATION: Changed user_name for new runs
     seed=1,
     cuda=True,
     cuda_deterministic=False,
-    n_training_threads=4,
-    n_rollout_threads=8,            # 并行环境数 (可以根据你的CPU核心数调整, e.g., 4, 8, 16)
-    num_env_steps=2000000,          # MODIFICATION: Increased total steps for more learning
-    verbose=True,
+    n_training_threads=8,
+    n_rollout_threads=8,            # 并行环境数 
+    num_env_steps=1000000,          # MODIFICATION: Increased total steps for more learning
 
     # --- 环境特定参数 ---
     num_agents=25,
     world_size=10,
     speed=0.05,
     radius=2.0,
-    cost=1.0,
+    cost=1.0, 
     r=5.0,
     beta=1.0,
-    # MODIFICATION: Significantly increased episode_length
-    episode_length=128,             # 原来是 64. 尝试 256, 512, 或 1024.
+    episode_length=100,             # 原来是 64. 尝试 256, 512, 或 1024.
                                     # 需要确保内存足够存储 (L+1)*N_threads*N_agents*obs_dim 等
     env_max_steps = 2000,           # 环境内部逻辑回合最大步数
-    cooperation_lower_threshold = 0.05,
-    cooperation_upper_threshold = 0.95,
-    sustain_duration = 10,
 
 
     # === 网络结构与特性 ===
     share_policy=True,
-    use_centralized_V=True,
     # MODIFICATION: Increased hidden_size
     hidden_size=64,                # 原来是 32. 尝试 64, 128.
     layer_N=2,                      # MODIFICATION: MLP层数可以尝试增加到2
@@ -82,13 +75,11 @@ all_args = SimpleNamespace(
 
     # === GNN 相关参数 ===
     use_gnn_policy=True,
-    # MODIFICATION: Increased gnn_hidden_size
     gnn_hidden_size=64,            # 原来是 64. 尝试 128.
     gnn_num_heads=4,
     gnn_concat_heads=True,
     gnn_layer_N=2,
     gnn_use_ReLU=True,
-    # MODIFICATION: Increased embed_hidden_size if used significantly
     embed_hidden_size=64,          # 原来是 64. 尝试 128.
     embed_layer_N=1,                # 可以尝试增加到 2
     embed_use_ReLU=True,
@@ -103,10 +94,9 @@ all_args = SimpleNamespace(
 
     # === PPO 算法参数 ===
     ppo_epoch=10,                   # PPO 更新时数据重复利用次数
-    num_mini_batch=16,               # Mini-batch 数量。如果 episode_length * n_rollout_threads 很大，可以适当增加
+    num_mini_batch=32,               # Mini-batch 数量。如果 episode_length * n_rollout_threads 很大，可以适当增加
                                     # 例如，如果 L=512, N_threads=8, 总样本=4096*num_agents.
                                     # mini_batch_size = 4096*num_agents / 8. 确保 mini_batch_size 合理。
-    # MODIFICATION: Reduced entropy_coef
     entropy_coef=0.01,              # 原来是 0.05. 尝试 0.01, 0.005.
     value_loss_coef=1.0,
     lr=1e-4,                        # 学习率可以稍后调整，先看大结构是否稳定
@@ -129,6 +119,7 @@ all_args = SimpleNamespace(
     # === 保存与日志 ===
     save_interval=20,               # MODIFICATION: Increased save interval as episodes are longer
     log_interval=5,                 # MODIFICATION: Increased log interval
+    global_reset_interval = 5,
 
     # === 评估参数 ===
     use_eval=True,
@@ -142,56 +133,45 @@ all_args = SimpleNamespace(
 )
 
 # ==============================================================================
-# == 2. 环境创建函数 (保持不变, 但注意 make_eval_env 中 args.episode_length 的使用) ==
+# == 2. 环境创建函数  ==
 # ==============================================================================
 
 def make_train_env(all_args: SimpleNamespace):
-    """ 创建训练环境，根据 n_rollout_threads 决定使用 DummyVecEnv 或 SubprocVecEnv """
+    """ 
+    创建并行训练环境 
+    - Return: 并行环境类 GraphSubprocVecEnv
+    
+    """
     def get_env_fn(rank: int):
         def init_env():
             current_seed = all_args.seed + rank * 1000 
             print(f"  (训练环境初始化 rank {rank}) 使用种子: {current_seed}")
-            # Create a copy of all_args for the env to avoid issues if env modifies it
             env_args = SimpleNamespace(**vars(all_args))
-            # The env itself doesn't need all_args.episode_length for its internal logic,
-            # but it's passed for consistency or if some internal logic did use it.
             env = MultiAgentGraphEnv(env_args)
             env.seed(current_seed)
             return env
         return init_env 
 
-    if all_args.n_rollout_threads == 1:
-        print("  创建单线程 DummyVecEnv 用于训练...")
-        return GraphDummyVecEnv([get_env_fn(0)])
-    else:
-        print(f"  创建 {all_args.n_rollout_threads} 个并行 SubprocVecEnv 用于训练...")
-        return GraphSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
+    print(f"  创建 {all_args.n_rollout_threads} 个并行 SubprocVecEnv 用于训练...")
+    return GraphSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 def make_eval_env(all_args: SimpleNamespace):
-    """ 创建评估环境 """
+    """ 
+    创建并行评估环境 
+    - Return: 并行环境类 GraphSubprocVecEnv 
+    """
     def get_env_fn(rank: int):
         def init_env():
             eval_seed = all_args.seed * 10000 + rank * 1000 + 100 # Different seed for eval
-            print(f"  (评估环境初始化 rank {rank}) 使用种子: {eval_seed}")
-            
+            print(f"  (评估环境初始化 rank {rank}) 使用种子: {eval_seed}")            
             eval_env_args = SimpleNamespace(**vars(all_args))
-            # For evaluation, the environment's logical episode length might be controlled
-            # by eval_steps_per_round, which is handled by the evaluator.
-            # marl_env's env_max_steps will be the primary controller of logical episode termination.
-            # We don't need to override eval_env_args.episode_length here, as marl_env
-            # doesn't use an 'episode_length' param from args for its core step/reset logic.
-            # The evaluator will run for `eval_steps_per_round`.
             env = MultiAgentGraphEnv(eval_env_args)
             env.seed(eval_seed)
             return env
         return init_env
 
-    if all_args.n_eval_rollout_threads == 1:
-        print(f"  创建单线程 DummyVecEnv 用于评估 (评估器将控制评估轮数和每轮步数)")
-        return GraphDummyVecEnv([get_env_fn(0)])
-    else:
-        print(f"  创建 {all_args.n_eval_rollout_threads} 个并行 SubprocVecEnv 用于评估 (评估器将控制评估轮数和每轮步数)")
-        return GraphSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
+    print(f"  创建 {all_args.n_eval_rollout_threads} 个并行 SubprocVecEnv 用于评估")
+    return GraphSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
 
 # ==============================================================================
 # == 3. 主函数 (保持不变) ==
@@ -215,10 +195,9 @@ def main():
         torch.set_num_threads(all_args.n_training_threads)
 
     # --- 2. 打印最终配置 ---
-    if all_args.verbose:
-        print("--- Final Configuration ---")
-        print_args(all_args)
-        print("-" * 50)
+    print("--- Final Configuration ---")
+    print_args(all_args)
+    print("-" * 50)
 
     # --- 3. 设置日志目录 ---
     run_dir = (Path(project_root) / "results")
@@ -287,17 +266,16 @@ def main():
         sys.exit(1)
 
     # --- 9. 打印网络结构 ---
-    if all_args.verbose:
-        try:
-            print_box("Actor Network", 80)
-            if hasattr(runner, 'policy') and runner.policy and hasattr(runner.policy, 'actor'):
-                print(runner.policy.actor)
-            else: print("  无法访问 Actor 网络结构。")
-            print_box("Critic Network", 80)
-            if hasattr(runner, 'policy') and runner.policy and hasattr(runner.policy, 'critic'):
-                print(runner.policy.critic)
-            else: print("  无法访问 Critic 网络结构。")
-        except Exception as e: print(f"  打印网络结构时出错: {e}")
+    try:
+        print_box("Actor Network", 80)
+        if hasattr(runner, 'policy') and runner.policy and hasattr(runner.policy, 'actor'):
+            print(runner.policy.actor)
+        else: print("  无法访问 Actor 网络结构。")
+        print_box("Critic Network", 80)
+        if hasattr(runner, 'policy') and runner.policy and hasattr(runner.policy, 'critic'):
+            print(runner.policy.critic)
+        else: print("  无法访问 Critic 网络结构。")
+    except Exception as e: print(f"  打印网络结构时出错: {e}")
 
     # --- 10. 开始训练 ---
     print_box("开始训练流程...")

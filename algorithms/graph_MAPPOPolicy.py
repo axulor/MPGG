@@ -118,6 +118,10 @@ class GR_MAPPOPolicy:
 
     
     def get_values(self, cent_obs, node_obs, adj, share_agent_id):
+        """
+        Return:
+        - values: critic 给出的价值估计
+        """
         
         values = self.critic.forward(cent_obs, node_obs, adj, share_agent_id)
 

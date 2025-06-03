@@ -1,9 +1,7 @@
-# env_wrappers.py (修改 CloudpickleWrapper 和移除 ShareVecEnv)
 import numpy as np
 import os
 from multiprocessing import Process, Pipe
-# from abc import ABC, abstractmethod # 不再需要 ABC
-import cloudpickle # 导入 cloudpickle
+import cloudpickle 
 
 
 class CloudpickleWrapper(object):
@@ -52,19 +50,8 @@ def graphworker(remote, parent_remote, env_fn_wrapper):
             cmd, data = remote.recv()
             if cmd == "step":
                 ob, ag_id, node_ob, adj, reward, done, info = env.step(data)
-                # MODIFICATION START: Removed automatic reset on np.all(done)
-                # if np.all(done): # 如果这个并行环境中的所有智能体都done了
-                #     # 在这里，我们不再让worker自行reset。
-                #     # done信号会通过remote.send传递给主进程。
-                #     # 主进程(Runner)将决定何时以及如何处理reset（通常在下一个rollout segment开始前，
-                #     # 如果需要的话，或者在warmup时）。
-                #     # 对于PPO，通常是从上一个segment的最终状态继续，而不是reset。
-                #     # ob, ag_id, node_ob, adj = env.reset() # 这行被注释或移除
-                #     pass # 确保语法正确
-                # MODIFICATION END
                 remote.send((ob, ag_id, node_ob, adj, reward, done, info))
             elif cmd == "reset":
-                # This reset is now explicitly called by the main process (e.g., during warmup)
                 ob, ag_id, node_ob, adj = env.reset()
                 remote.send((ob, ag_id, node_ob, adj))
             elif cmd == "close":
@@ -98,84 +85,7 @@ def graphworker(remote, parent_remote, env_fn_wrapper):
                 pass
             break # 出错后子进程也应该退出循环
 
-
-class GraphDummyVecEnv: # 不再继承 ShareVecEnv
-    """
-    用于图环境的“假的”向量化环境 (在主进程中串行运行)。
-    主要用于单线程训练/评估，或调试。
-    """
-    def __init__(self, env_fns: list):
-        """
-        Args:
-            env_fns (list): 包含创建单个环境实例的函数的列表。
-        """
-        self.envs = [fn() for fn in env_fns]
-        env = self.envs[0]
-
-        self.num_envs = len(env_fns)
-        self.observation_space = env.observation_space
-        self.share_observation_space = env.share_observation_space
-        self.action_space = env.action_space
-        self.closed = False
-
-        self.actions = None
-
-        # 存储图环境特有的空间定义
-        self.node_observation_space = env.node_observation_space
-        self.adj_observation_space = env.adj_observation_space
-        self.edge_observation_space = env.edge_observation_space
-        self.agent_id_observation_space = env.agent_id_observation_space
-        self.share_agent_id_observation_space = env.share_agent_id_observation_space
-
-    def step_async(self, actions):
-        self.actions = actions
-
-    def step_wait(self):
-        results = []
-        for i, (action, env) in enumerate(zip(self.actions, self.envs)):
-            obs_one, ag_id_one, node_obs_one, adj_one, reward_one, done_one, info_one = env.step(action)
-            # MODIFICATION START: Removed automatic reset on np.all(done_one)
-            # if np.all(done_one):
-            #     # Similar to graphworker, GraphDummyVecEnv also should not auto-reset.
-            #     # The done_one signal will be passed up.
-            #     # obs_one, ag_id_one, node_obs_one, adj_one = env.reset() # This line is commented or removed
-            #     pass
-            # MODIFICATION END
-            results.append((obs_one, ag_id_one, node_obs_one, adj_one, reward_one, done_one, info_one))
-
-        obs, ag_ids, node_obs, adj, rews, dones, infos = map(np.array, zip(*results))
-        self.actions = None
-        return obs, ag_ids, node_obs, adj, rews, dones, infos
-
-    def reset(self):
-        # This reset is explicitly called by the main process (e.g., during warmup)
-        results = []
-        for env in self.envs:
-            obs_one, ag_id_one, node_obs_one, adj_one = env.reset()
-            results.append((obs_one, ag_id_one, node_obs_one, adj_one))
-        
-        obs, ag_id, node_obs, adj = map(np.array, zip(*results))
-        return obs, ag_id, node_obs, adj
-
-    def close_extras(self):
-        """GraphDummyVecEnv 当前没有额外的清理"""
-        pass 
-
-    def close(self):
-        if self.closed:
-            return
-        self.close_extras() 
-        for env in self.envs:
-            env.close()
-        self.closed = True # 设置 closed 状态
-
-    def step(self, actions):
-        """同步地执行环境步骤 (原 ShareVecEnv 中的方法)。"""
-        self.step_async(actions)
-        return self.step_wait()
-
-
-class GraphSubprocVecEnv: # 不再继承 ShareVecEnv
+class GraphSubprocVecEnv:
     """
     用于图环境的、基于子进程的向量化环境，实现真正的并行数据采样。
     """
