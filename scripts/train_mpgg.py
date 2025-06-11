@@ -43,7 +43,7 @@ all_args = SimpleNamespace(
     cuda_deterministic=False,
     n_training_threads=8,
     n_rollout_threads=8,            # 并行环境数 
-    num_env_steps=1000000,          # MODIFICATION: Increased total steps for more learning
+    num_env_steps=500000,          # MODIFICATION: Increased total steps for more learning
 
     # --- 环境特定参数 ---
     num_agents=25,
@@ -53,7 +53,7 @@ all_args = SimpleNamespace(
     cost=1.0, 
     r=5.0,
     beta=1.0,
-    episode_length=100,             # 原来是 64. 尝试 256, 512, 或 1024.
+    episode_length=128,             # 原来是 64. 尝试 256, 512, 或 1024.
                                     # 需要确保内存足够存储 (L+1)*N_threads*N_agents*obs_dim 等
     env_max_steps = 2000,           # 环境内部逻辑回合最大步数
 
@@ -93,14 +93,14 @@ all_args = SimpleNamespace(
 
 
     # === PPO 算法参数 ===
-    ppo_epoch=10,                   # PPO 更新时数据重复利用次数
+    ppo_epoch=4,                   # PPO 更新时数据重复利用次数
     num_mini_batch=32,               # Mini-batch 数量。如果 episode_length * n_rollout_threads 很大，可以适当增加
                                     # 例如，如果 L=512, N_threads=8, 总样本=4096*num_agents.
                                     # mini_batch_size = 4096*num_agents / 8. 确保 mini_batch_size 合理。
     entropy_coef=0.01,              # 原来是 0.05. 尝试 0.01, 0.005.
     value_loss_coef=1.0,
     lr=1e-4,                        # 学习率可以稍后调整，先看大结构是否稳定
-    critic_lr=1e-4,                 # 同上
+    critic_lr=5e-6,                 # 同上
     clip_param=0.2,
     opti_eps=1e-5,
     max_grad_norm=10.0,
@@ -119,7 +119,7 @@ all_args = SimpleNamespace(
     # === 保存与日志 ===
     save_interval=20,               # MODIFICATION: Increased save interval as episodes are longer
     log_interval=5,                 # MODIFICATION: Increased log interval
-    global_reset_interval = 5,
+    global_reset_interval = 10,
 
     # === 评估参数 ===
     use_eval=True,

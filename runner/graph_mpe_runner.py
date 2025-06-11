@@ -149,8 +149,8 @@ class GMPERunner:
                 print(f"  (Runner) 所有环境已重置并 Warmup 完成。")
 
             # 并行 rollout 循环
-            segment_coop_rates = np.full((self.episode_length, self.n_rollout_threads), np.nan, dtype=np.float32)
-            segment_avg_rewards = np.full((self.episode_length, self.n_rollout_threads), np.nan, dtype=np.float32)
+            segment_coop_rates = np.full((self.episode_length, self.n_rollout_threads), np.nan, dtype=np.float32) # 存储合作率数据
+            segment_avg_rewards = np.full((self.episode_length, self.n_rollout_threads), np.nan, dtype=np.float32) # 存储奖励数据
             for step in range(self.episode_length):                            
                 values, actions, action_log_probs = self.collect()    # 搜集动作         
                 obs, agent_id, node_obs, adj, rewards, dones, infos = self.envs.step(actions)    # 执行动作

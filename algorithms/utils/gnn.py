@@ -227,17 +227,17 @@ class TransformerConvNet(nn.Module):
         elif self.graph_aggr == 'global':
             pool_func = {'mean': global_mean_pool, 'max': global_max_pool, 'add': global_add_pool}.get(self.global_aggr_type)
             if pool_func:
-                 # 确保 batch_indices 不为空且与 x 兼容
-                 if batch_indices is not None and batch_indices.max() < len(torch.unique(batch_indices)): # 基础检查
+                # 确保 batch_indices 不为空且与 x 兼容
+                if batch_indices is not None and batch_indices.max() < len(torch.unique(batch_indices)): # 基础检查
                     return pool_func(x, batch_indices)
-                 else: # 处理 batch_indices 无效或为空的情况
+                else: # 处理 batch_indices 无效或为空的情况
                     print(f"警告：全局池化收到无效的 batch_indices (max={batch_indices.max() if batch_indices is not None else None}, size={len(torch.unique(batch_indices)) if batch_indices is not None else None}) 或 x 为空 ({x.shape})。返回零张量。")
                     # 需要知道输出形状来创建零张量
                     num_graphs = batch_indices.max().item() + 1 if batch_indices is not None and batch_indices.numel() > 0 else 0
                     out_dim = x.shape[-1]
                     return torch.zeros((num_graphs, out_dim), device=x.device, dtype=x.dtype)
             else:
-                 raise ValueError(f"不支持的全局聚合类型: {self.global_aggr_type}")
+                raise ValueError(f"不支持的全局聚合类型: {self.global_aggr_type}")
         else:
             raise ValueError(f"无效的图聚合方式: {self.graph_aggr}")
 
@@ -245,7 +245,11 @@ class TransformerConvNet(nn.Module):
     # --- process_adj 静态方法保持不变 ---
     @staticmethod
     def process_adj(adj: Tensor, max_edge_dist: float) -> Tuple[Tensor, Tensor]:
-        """处理邻接距离矩阵，生成 edge_index 和 edge_attr。"""
+        """
+        Return:
+        - edge_index: 边
+        - edge_attr: 边权重
+        """
         assert adj.dim() >= 2 and adj.dim() <= 3, f"邻接矩阵维度必须是 2 或 3, 得到 {adj.dim()}"
         assert adj.size(-1) == adj.size(-2), "邻接矩阵必须是方阵"
         connect_mask = ((adj < max_edge_dist) & (adj > 0)).float()
@@ -255,7 +259,7 @@ class TransformerConvNet(nn.Module):
             batch_size, num_nodes, _ = adj_masked.shape
             edge_indices_flat = adj_masked.nonzero(as_tuple=False)
             if edge_indices_flat.numel() == 0:
-                 return torch.empty((2, 0), dtype=torch.int64, device=adj.device), \
+                return torch.empty((2, 0), dtype=torch.int64, device=adj.device), \
                         torch.empty((0, 1), dtype=torch.float32, device=adj.device)
             edge_attr = adj_masked[edge_indices_flat[:, 0], edge_indices_flat[:, 1], edge_indices_flat[:, 2]]
             batch_offset = edge_indices_flat[:, 0] * num_nodes
@@ -265,7 +269,7 @@ class TransformerConvNet(nn.Module):
         else:
             edge_index = adj_masked.nonzero(as_tuple=False).t().contiguous().to(torch.int64)
             if edge_index.numel() == 0:
-                 return torch.empty((2, 0), dtype=torch.int64, device=adj.device), \
+                return torch.empty((2, 0), dtype=torch.int64, device=adj.device), \
                         torch.empty((0, 1), dtype=torch.float32, device=adj.device)
             edge_attr = adj_masked[edge_index[0], edge_index[1]]
 
@@ -322,36 +326,23 @@ class GNNBase(nn.Module):
 
     def forward(self, node_obs: Tensor, adj: Tensor, agent_id: Tensor) -> Tensor:
         """
-        GNNBase 的前向传播 (逻辑基本不变，但输入 node_obs 维度不同)。
-
-        Args:
-            node_obs (Tensor): 节点特征，形状 [batch_size, num_nodes, node_obs_dim (不含ID)]。
-            adj (Tensor): 邻接距离矩阵，形状 [batch_size, num_nodes, num_nodes]。
-            agent_id (Tensor): 需要提取特征的节点 ID，形状 [batch_size, k]。
-
-        Returns:
-            Tensor: GNN 处理后的特征表示。
+        Return:
+        - Tensor: GNN 处理后的特征表示
         """
-        batch_size, num_nodes, current_node_obs_dim = node_obs.shape
-        # 验证输入维度是否与预期匹配（可选）
-        # expected_node_dim = ... # 需要从初始化获取
-        # assert current_node_obs_dim == expected_node_dim, f"输入 node_obs 维度 ({current_node_obs_dim}) 与预期 ({expected_node_dim}) 不符"
+        batch_size, num_nodes, node_obs_dim = node_obs.shape
 
-        # 1. 转换 adj 为 edge_index, edge_attr
+        # 从距离邻接矩阵中提取边和边权重
         edge_index, edge_attr = TransformerConvNet.process_adj(adj, self.args.max_edge_dist)
 
-        # 2. 准备 PyG Batch 数据
-        x = node_obs.reshape(-1, current_node_obs_dim) # 展平
+        x = node_obs.reshape(-1, node_obs_dim) # 合并前两个维度
         batch_indices = torch.arange(batch_size, device=node_obs.device).repeat_interleave(num_nodes)
         data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, batch=batch_indices)
 
-        # 3. 通过核心 GNN 网络
         # 输出 x_processed 形状:
         #   - 'node': [batch_size * num_nodes, self.out_dim]
         #   - 'global': [batch_size, self.out_dim]
         x_processed = self.gnn(data)
 
-        # 4. 根据聚合方式处理输出
         if self.graph_aggr == 'node':
             # 需要提取特定节点的特征
             x_reshaped = x_processed.view(batch_size, num_nodes, self.out_dim)

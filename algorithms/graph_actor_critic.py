@@ -106,9 +106,7 @@ class GR_Actor(nn.Module):
             actor_features = []
             for batch in batchGenerator:
                 obs_batch, node_obs_batch, adj_batch, agent_id_batch = batch
-                nbd_feats_batch = self.gnn_base(
-                    node_obs_batch, adj_batch, agent_id_batch
-                )
+                nbd_feats_batch = self.gnn_base(node_obs_batch, adj_batch, agent_id_batch)
                 act_feats_batch = torch.cat([obs_batch, nbd_feats_batch], dim=1)
                 actor_feats_batch = self.base(act_feats_batch)
                 actor_features.append(actor_feats_batch)
