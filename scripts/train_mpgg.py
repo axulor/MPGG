@@ -76,7 +76,7 @@ all_args = SimpleNamespace(
     # === GNN 相关参数 ===
     use_gnn_policy=True,
     gnn_hidden_size=64,            # 原来是 64. 尝试 128.
-    gnn_num_heads=4,
+    gnn_num_heads=4,                # gnn 多头注意力机制的头数
     gnn_concat_heads=True,
     gnn_layer_N=2,
     gnn_use_ReLU=True,
@@ -113,9 +113,6 @@ all_args = SimpleNamespace(
     huber_delta=10.0,
     weight_decay=0,
 
-    # === 运行参数 ===
-    use_linear_lr_decay=True,
-
     # === 保存与日志 ===
     save_interval=20,               # MODIFICATION: Increased save interval as episodes are longer
     log_interval=5,                 # MODIFICATION: Increased log interval
@@ -124,7 +121,7 @@ all_args = SimpleNamespace(
     # === 评估参数 ===
     use_eval=True,
     n_eval_rollout_threads=8,       # 评估并行环境数 (可以与训练并行数不同)
-    eval_interval=50,              # MODIFICATION: Increased eval interval
+    eval_interval=10,              # MODIFICATION: Increased eval interval
     eval_rounds = 80,
     eval_steps_per_round = 500,     # 评估时每轮的步数
 
@@ -163,7 +160,7 @@ def make_eval_env(all_args: SimpleNamespace):
     def get_env_fn(rank: int):
         def init_env():
             eval_seed = all_args.seed * 10000 + rank * 1000 + 100 # Different seed for eval
-            print(f"  (评估环境初始化 rank {rank}) 使用种子: {eval_seed}")            
+            print(f"(评估环境初始化 rank {rank}) 使用种子: {eval_seed}")            
             eval_env_args = SimpleNamespace(**vars(all_args))
             env = MultiAgentGraphEnv(eval_env_args)
             env.seed(eval_seed)

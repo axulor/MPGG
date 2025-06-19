@@ -39,7 +39,6 @@ class GMPERunner:
         self.episode_length = self.all_args.episode_length                  # Replay Buffer 中存储的时序轨迹的长度 int 
         self.n_rollout_threads = self.all_args.n_rollout_threads            # 用于数据搜集的并行环境实例数量 int
         self.n_eval_rollout_threads = self.all_args.n_eval_rollout_threads  # 用于策略评估的并行环境实例数量 int
-        self.use_linear_lr_decay = self.all_args.use_linear_lr_decay        # 是否在训练过程中线性衰减学习率 bool
         self.hidden_size = self.all_args.hidden_size                        # 神经网络隐藏层的大小/维度 int
 
 
@@ -66,7 +65,7 @@ class GMPERunner:
         # 初始化策略、训练器和 Buffer
 
         # 确定 Critic 输入的中心化观测空间
-        share_observation_space = self.envs.share_observation_space[0] 
+        share_obs_space = self.envs.share_observation_space[0] 
 
         # 初始化策略网络 (Actor 和 Critic)
         print("  (Runner) 初始化策略网络...")
@@ -74,11 +73,11 @@ class GMPERunner:
         # 图环境 Policy 初始化 (保持上次修正后的参数列表)
         self.policy = GR_MAPPOPolicy(
             self.all_args,                      # 1. args
-            self.envs.observation_space[0],     # 2. obs_space
-            share_observation_space,            # 3. cent_obs_space
-            self.envs.node_observation_space[0],# 4. node_obs_space
-            self.envs.edge_observation_space[0],# 5. edge_obs_space
-            self.envs.action_space[0],          # 6. act_space
+            self.envs.observation_space[0],     # 2. 单个智能体的个体局部观测空间
+            share_obs_space,                    # 3. 传入 Critic的全局观测空间
+            self.envs.node_observation_space[0],# 4. 传入 GNN的图节点特征空间
+            self.envs.edge_observation_space[0],# 5. 传入 GNN的图边特征空间
+            self.envs.action_space[0],          # 6. 单个智能体的动作空间
             device=self.device                  # 7. device
         )
 
@@ -96,9 +95,8 @@ class GMPERunner:
         print("  (Runner) 初始化 Replay Buffer...")
         self.buffer = GraphReplayBuffer(
             self.all_args,
-            self.num_agents,
             self.envs.observation_space[0],
-            share_observation_space,
+            share_obs_space,
             self.envs.node_observation_space[0],
             self.envs.agent_id_observation_space[0],
             self.envs.share_agent_id_observation_space[0],
@@ -132,14 +130,13 @@ class GMPERunner:
         print("  (Runner) Warmup 完成 ")
 
         episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
-        print(f"  (Runner) 总训练步数: {self.num_env_steps}, 每回合步数: {self.episode_length}, 并行环境数: {self.n_rollout_threads}")
+        print(f"  (Runner) 总训练步数: {self.num_env_steps}, 每回合步数: {self.episode_length}, 并行环境数: {self.n_rollout_threads}, 单个环境智能体数: { self.num_agents}")
         print(f"  (Runner) 将运行 {episodes} 个学习更新周期 ")
 
         # 核心训练循环
         for episode in range(episodes):
             # 学习率线性下降
-            if self.use_linear_lr_decay: 
-                self.trainer.policy.lr_decay(episode, episodes)
+            self.trainer.policy.lr_decay(episode, episodes)
             
             # 环境定期重置
             if reset_count >= self.global_reset_interval:
@@ -148,11 +145,17 @@ class GMPERunner:
                 reset_count = 0 # 重置计数器
                 print(f"  (Runner) 所有环境已重置并 Warmup 完成。")
 
-            # 并行 rollout 循环
+            if episode == 0:
+                print(f"  执行初始评估...")
+                self.fast_eval(episode)
+                print("  (Runner) 评估完成.")
+
             segment_coop_rates = np.full((self.episode_length, self.n_rollout_threads), np.nan, dtype=np.float32) # 存储合作率数据
             segment_avg_rewards = np.full((self.episode_length, self.n_rollout_threads), np.nan, dtype=np.float32) # 存储奖励数据
+
+            # 并行 rollout 循环
             for step in range(self.episode_length):                            
-                values, actions, action_log_probs = self.collect()    # 搜集动作         
+                values, actions, action_log_probs = self.sample_policy_outputs()    # 采样动作         
                 obs, agent_id, node_obs, adj, rewards, dones, infos = self.envs.step(actions)    # 执行动作
                 # 处理环境指标信息
                 for thread in range(self.n_rollout_threads):
@@ -169,6 +172,19 @@ class GMPERunner:
                 share_obs = np.expand_dims(share_obs, 1).repeat(self.num_agents, axis=1)
                 share_agent_id = agent_id.reshape(self.n_rollout_threads, -1)
                 share_agent_id = np.expand_dims(share_agent_id, 1).repeat(self.num_agents, axis=1)
+
+                # print(f"[DEBUG]  share_obs: {share_obs.shape}, share_obs: {share_obs.dtype}")
+                # print(f"[DEBUG]  obs: {obs.shape}, obs: {obs.dtype}")
+                # print(f"[DEBUG]  node_obs: {node_obs.shape}, node_obs: {node_obs.dtype}")
+                # print(f"[DEBUG]  adj: {adj.shape}, adj: {adj.dtype}")
+                # print(f"[DEBUG]  agent_id: {agent_id.shape}, agent_id: {agent_id.dtype}")
+                # print(f"[DEBUG]  share_agent_id: {share_agent_id.shape}, share_agent_id: {share_agent_id.dtype}")
+                # print(f"[DEBUG]  actions: {actions.shape}, actions: {actions.dtype}")
+                # print(f"[DEBUG]  action_log_probs: {action_log_probs.shape}, action_log_probs: {action_log_probs.dtype}")
+                # print(f"[DEBUG]  values: {values.shape}, values: {values.dtype}")
+                # print(f"[DEBUG]  rewards: {rewards.shape}, rewards: {rewards.dtype}")
+                # print(f"[DEBUG]  dones: {dones.shape}, dones: {dones.dtype}")
+
                 # 向 buffer 中插入数据 
                 self.buffer.insert(
                     share_obs,
@@ -187,13 +203,32 @@ class GMPERunner:
             # rollout 结束后为 buffer 计算 returns
             print(f"  (Runner) 回合 {episode + 1}/{episodes}: 计算 Return...")
             with torch.no_grad():
+
                 self.trainer.prep_evaluating() # 置为评估模式
+
                 # 对 rollout segment 中的最后一个状态 s_L 进行价值估计
+                buffer_idx_L = self.buffer.episode_length
+                node_obs = self.buffer.node_obs[buffer_idx_L][:, 0, :, :] # 所有智能体都是相同的
+                adj = self.buffer.adj[buffer_idx_L][:, 0, :, :]  # 所有智能体都是相同的
+                share_obs = np.concatenate(self.buffer.share_obs[buffer_idx_L])
+
+                # 将 NumPy 数组转换为 PyTorch Tensors 并移到设备
+                share_obs = torch.from_numpy(share_obs).float().to(self.device)
+                node_obs = torch.from_numpy(node_obs).float().to(self.device) 
+                adj = torch.from_numpy(adj).float().to(self.device)
+                obs = torch.from_numpy(obs).float().to(self.device) # 特征数据是 float32
+
+                # 打印价值估计的准备参数
+                print(f"--- Printing parameters for estimating ---")
+                print(f"  node_obs: {node_obs.shape}, dtype: {node_obs.dtype}, device: {node_obs.device}")
+                print(f"  adj: {adj.shape}, dtype: {adj.dtype}, device: {adj.device}")
+                print(f"  share_obs: {share_obs.shape}, dtype: {share_obs.dtype}, device: {share_obs.device}")
+                print(f"--- Printing completed ---")
+
                 next_values = self.trainer.policy.get_values(
-                    np.concatenate(self.buffer.share_obs[self.buffer.episode_length]), # obs for s_L (successor of a_{L-1})
-                    np.concatenate(self.buffer.node_obs[self.buffer.episode_length]),
-                    np.concatenate(self.buffer.adj[self.buffer.episode_length]),
-                    np.concatenate(self.buffer.share_agent_id[self.buffer.episode_length]),
+                    node_obs,
+                    adj,
+                    share_obs,                  
                 )
                 next_values = np.array(np.split(_t2n(next_values), self.n_rollout_threads))            
             self.buffer.compute_returns(next_values, self.trainer.value_normalizer) # 在 buffer 中计算 returns 
@@ -243,7 +278,7 @@ class GMPERunner:
                 self.log_env(env_infos, total_num_steps)
                 print("  (Runner) 日志记录完成.")
 
-            # 评估模型
+            # 评估模型                
             if self.use_eval and ((episode + 1) % self.eval_interval == 0 or episode == episodes - 1):
                 print(f"  (Runner) 回合 {episode + 1}/{episodes}: 执行评估...")
                 self.fast_eval(episode)
@@ -281,44 +316,93 @@ class GMPERunner:
         )
 
         self.buffer.step = 0 # Explicitly set buffer's circular pointer to 0
-
+    
 
     @torch.no_grad() 
-    def collect(self) -> Tuple[arr, arr, arr]:
+    def sample_policy_outputs(self) -> Tuple[arr, arr, arr]: 
         """
+        根据 Buffer 中的当前状态，调用策略网络获取动作、动作对数概率和价值估计。
+
         Return: 
         - values: 动作价值
         - actions: 动作
         - action_log_probs: 动作概率 
         """
-        self.trainer.prep_evaluating()
-        share_obs_batch = np.concatenate(self.buffer.share_obs[self.buffer.step])
-        obs_batch = np.concatenate(self.buffer.obs[self.buffer.step])
-        node_obs_batch = np.concatenate(self.buffer.node_obs[self.buffer.step])
-        adj_batch = np.concatenate(self.buffer.adj[self.buffer.step])
-        agent_id_batch = np.concatenate(self.buffer.agent_id[self.buffer.step])
-        share_agent_id_batch = np.concatenate(self.buffer.share_agent_id[self.buffer.step])
+        self.trainer.prep_evaluating() # 将 Actor 和 Critic 设置为评估模式
 
-        value, action, action_log_prob = self.trainer.policy.get_actions(
-            share_obs_batch,    
-            obs_batch,
-            node_obs_batch,
-            adj_batch,
-            agent_id_batch,     
-            share_agent_id_batch,
+        # 从 Buffer 获取当前时间步 k = self.buffer.step 的数据
+        buffer_step = self.buffer.step
+        obs = np.concatenate(self.buffer.obs[buffer_step]) # Actor 和 Critic 的 MLP 输入所需的扁平化观测
+        share_obs = np.concatenate(self.buffer.share_obs[buffer_step])
+        node_obs = self.buffer.node_obs[buffer_step][:, 0, :, :]  # GNN 输入的 M 个独特的全局图数据
+        adj = self.buffer.adj[buffer_step][:, 0, :, :]
+        agent_id = np.concatenate(self.buffer.agent_id[buffer_step]) # 用于 Actor GNN 结果挑选的 ID
+        env_indices = np.arange(self.n_rollout_threads) 
+        env_id = np.repeat(env_indices, self.num_agents).reshape(-1, 1)
+
+        # # 打印 NumPy 形状和类型
+        # print(f"--- Print the shape and type of NumPy in sample_policy_outputs ---") 
+        # print(f"  Numpy obs_np shape: {obs.shape}, dtype: {obs.dtype}")
+        # print(f"  Numpy share_obs_np shape: {share_obs.shape}, dtype: {share_obs.dtype}")
+        # print(f"  Numpy node_obs_np shape: {node_obs.shape}, dtype: {node_obs.dtype}")
+        # print(f"  Numpy adj_np shape: {adj.shape}, dtype: {adj.dtype}")
+        # print(f"  Numpy agent_id_np shape: {agent_id.shape}, dtype: {agent_id.dtype}")
+        # print(f"  Numpy env_id_np shape: {env_id.shape}, dtype: {env_id.dtype}")
+        # print(f"--- Printing completed ---")
+
+        # 将 NumPy 数组转换为 PyTorch Tensors 并移到设备
+        obs = torch.from_numpy(obs).float().to(self.device) # 特征数据是 float32
+        share_obs = torch.from_numpy(share_obs).float().to(self.device)
+        node_obs = torch.from_numpy(node_obs).float().to(self.device) 
+        adj = torch.from_numpy(adj).float().to(self.device)
+        agent_id = torch.from_numpy(agent_id).long().to(self.device) # ID 数据是 long (int64)
+        env_id = torch.from_numpy(env_id).long().to(self.device) 
+        
+        # # 打印tensor的形状和数据
+        # print(f"  Torch obs_tensor: {obs.shape}, dtype: {obs.dtype}, device: {obs.device}")
+        # print(f"  Torch share_obs_tensor: {share_obs.shape}, dtype: {share_obs.dtype}, device: {share_obs.device}")
+        # print(f"  Torch node_obs_tensor: {node_obs.shape}, dtype: {node_obs.dtype}, device: {node_obs.device}")
+        # print(f"  Torch adj_tensor: {adj.shape}, dtype: {adj.dtype}, device: {adj.device}")
+        # print(f"  Torch agent_id_tensor: {agent_id.shape}, dtype: {agent_id.dtype}, device: {agent_id.device}")
+        # print(f"  Torch env_id_tensor: {env_id.shape}, dtype: {env_id.dtype}, device: {env_id.device}")
+        # print(f"--- Printing completed ---")
+
+        # 调用策略网络获取动作和动作对数概率
+        torch_actions, torch_action_log_probs = self.trainer.policy.get_actions(
+            obs,        # (M*N, D_obs)
+            node_obs,   # (M, N_nodes, D_node_raw)
+            adj,        # (M, N_nodes, N_nodes)
+            agent_id,   # (M*N, 1)
+            env_id      # (M*N, 1)
         )
         
-        values = np.array(np.split(_t2n(value), self.n_rollout_threads)) 
-        actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
-        action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
+        # 调用策略网络获取价值估计
+        torch_values = self.trainer.policy.get_values(
+            node_obs,       # (M, N_nodes, D_node_raw)
+            adj,            # (M, N_nodes, N_nodes)
+            share_obs  
+        )
+
+        # 将结果从 Tensor 转换为 NumPy 并恢复线程维度
+        values = np.array(np.split(_t2n(torch_values), self.n_rollout_threads)) 
+        actions = np.array(np.split(_t2n(torch_actions), self.n_rollout_threads))
+        action_log_probs = np.array(np.split(_t2n(torch_action_log_probs), self.n_rollout_threads))
+
+        # print(f"--- Printing sample_policy_outputs shape ---")
+        # print(f"  values: {values.shape}, dtype: {values.dtype}, device: {values.device}")
+        # print(f"  actions: {actions.shape}, dtype: {actions.dtype}, device: {actions.device}")
+        # print(f"  action_log_probs: {action_log_probs.shape}, dtype: {action_log_probs.dtype}, device: {action_log_probs.device}")
+        # print(f"--- Printing completed ---")
 
         return values, actions, action_log_probs
+
 
     @torch.no_grad()
     def fast_eval(self, episode: int): 
         """
         执行快速策略评估
         """
+        print(f"DEBUG: GMPERunner.fast_eval called for episode {episode}. Evaluator ID: {id(self.evaluator) if self.evaluator else 'None'}") # <--- 新增打印
         print(f"--- 开始评估 (在网络更新次数为 {episode} 时) ---")
         # 执行评估并获取结果
         eval_results = self.evaluator.eval_policy() # 返回评估结果

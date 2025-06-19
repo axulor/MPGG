@@ -12,6 +12,8 @@ from utils.valuenorm import ValueNorm
 from algorithms.utils.util import check
 import torch.jit as jit
 import torch.cuda.amp as amp
+
+
 class GR_MAPPO():
     """
         Trainer class for Graph MAPPO to update policies.
@@ -103,33 +105,44 @@ class GR_MAPPO():
         - actor_grad_norm:     Actor 网络梯度范数
         - imp_weights:         重要性采样权重
         """
+        # 解包样本参数
         share_obs_batch, obs_batch, node_obs_batch, adj_batch, agent_id_batch, \
-        share_agent_id_batch, \
-        actions_batch, old_values_batch, returns_batch, \
-        old_action_log_probs_batch, adv_targ = sample
+        share_agent_id_batch, actions_batch, values_batch, returns_batch, \
+        action_log_probs_batch, advantages_batch, env_id_batch = sample
 
-        old_action_log_probs_batch = check(old_action_log_probs_batch).to(**self.tpdv)
-        adv_targ = check(adv_targ).to(**self.tpdv)
-        old_values_batch = check(old_values_batch).to(**self.tpdv)
+        # 将需要计算的张量转移到设备
+        action_log_probs_batch = check(action_log_probs_batch).to(**self.tpdv)
+        advantages_batch = check(advantages_batch).to(**self.tpdv)
+        values_batch = check(values_batch).to(**self.tpdv)
         returns_batch = check(returns_batch).to(**self.tpdv)
+
+        obs_batch =  check(obs_batch).to(**self.tpdv)
+        node_obs_batch =  check(node_obs_batch).to(**self.tpdv)
+        adj_batch =  check(adj_batch).to(**self.tpdv)
+        agent_id_batch =  check(agent_id_batch).to(**self.tpdv)
+        env_id_batch =  check(env_id_batch).to(**self.tpdv)
+        actions_batch =  check(actions_batch).to(**self.tpdv)
+        share_obs_batch =  check(share_obs_batch).to(**self.tpdv)
 
         # 使用当前策略网络评估动作
         values, action_log_probs, dist_entropy = self.policy.evaluate_actions(
-                                                        share_obs_batch,
                                                         obs_batch,
                                                         node_obs_batch,
                                                         adj_batch,
                                                         agent_id_batch,
-                                                        share_agent_id_batch,
-                                                        actions_batch)
+                                                        env_id_batch,
+                                                        actions_batch,
+                                                        share_obs_batch,
+                                                        )
         # 重要性采样权重
-        imp_weights = torch.exp(action_log_probs - old_action_log_probs_batch)
+        imp_weights = torch.exp(action_log_probs - action_log_probs_batch)
 
-        surr1 = imp_weights * adv_targ # 没有PPO截断
-        surr2 = torch.clamp(imp_weights, 1.0 - self.clip_param, 
-                            1.0 + self.clip_param) * adv_targ # PPO截断
         # 策略损失
-        policy_loss = -torch.sum(torch.min(surr1, surr2), dim=-1, keepdim=True).mean()        
+        surr1 = imp_weights * advantages_batch # 没有PPO截断
+        surr2 = torch.clamp(imp_weights, 1.0 - self.clip_param, 
+                            1.0 + self.clip_param) * advantages_batch # PPO截断
+        policy_loss = -torch.sum(torch.min(surr1, surr2), dim=-1, keepdim=True).mean()
+
         # Actor 网络的梯度清零、反向传播和参数更新
         self.policy.actor_optimizer.zero_grad()
         actor_total_loss = policy_loss - dist_entropy * self.entropy_coef # 这是 Actor 要最小化的总损失 
@@ -145,8 +158,9 @@ class GR_MAPPO():
 
         # 价值损失
         value_loss = self.cal_value_loss(values,         # V_new(s_t)
-                                        old_values_batch,   # V_old(s_t)
+                                        values_batch,   # V_old(s_t)
                                         returns_batch)   # G_t
+        
         # Critic 网络的梯度清零、反向传播和参数更新
         self.policy.critic_optimizer.zero_grad()
         critic_loss = (value_loss * self.value_loss_coef)    # Critic 要最小化的总损失
@@ -181,6 +195,8 @@ class GR_MAPPO():
         mean_advantages = np.nanmean(advantages)
         std_advantages = np.nanstd(advantages)
         advantages = (advantages - mean_advantages) / (std_advantages + 1e-5)
+
+        advantages_flat_for_generator = advantages.reshape(-1, 1) 
         
         train_infos = {}
         train_infos['value_loss'] = 0        # 价值损失, value_loss, 逐渐减小并收敛
@@ -192,7 +208,7 @@ class GR_MAPPO():
 
         for _ in range(self.ppo_epoch):
             # 将整个 Buffer 的数据分割成 self.num_mini_batch 个小批次
-            data_generator = buffer.feed_forward_generator(advantages, self.num_mini_batch)
+            data_generator = buffer.feed_forward_generator(advantages_flat_for_generator, self.num_mini_batch)
             for sample in data_generator:
                 value_loss, critic_grad_norm, policy_loss, dist_entropy, \
                 actor_grad_norm, imp_weights = self.ppo_update(sample) # 用这批样本做一次网络更新

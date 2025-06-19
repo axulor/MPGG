@@ -15,67 +15,53 @@ import argparse
 from typing import List, Tuple, Union, Optional
 from torch_geometric.typing import OptPairTensor, Adj, OptTensor, Size
 # import torch.jit as jit # 似乎未使用
-from .util import init, get_clones
+from .util import init, get_clones, check
 
-"""GNN 模块定义 (已修改，移除实体类型嵌入)"""
+"""GNN 模块定义 """
 
 class EmbedConv(MessagePassing):
     """
-    (修改版) EmbedConv 层: 结合节点特征和可选的边特征进行消息传递。
-    不再处理实体类型嵌入。
+    EmbedConv 层: 对节点特征和可选的边特征进行初步变换
+
     """
     def __init__(self,
-                input_dim:int,          # 输入节点特征的维度 (现在是完整维度)
-                # num_embeddings:int,   # 移除
-                # embedding_size:int,   # 移除
-                hidden_size:int,
-                layer_N:int,
-                use_orthogonal:bool,
-                use_ReLU:bool,
-                use_layerNorm:bool,
-                add_self_loop:bool,
-                edge_dim:int=0):
-        """
-        (修改版) 初始化 EmbedConv 层。
+                input_dim: int,      # 输入节点特征的维度
+                hidden_size: int,    # EmbedConv 内部 MLP 的隐藏维度
+                layer_N: int,        # EmbedConv 内部 MLP 的层数
+                use_orthogonal: bool,
+                use_ReLU: bool,
+                use_layerNorm: bool, # 是否在 EmbedConv 的 MLP 中使用 LayerNorm
+                add_self_loop: bool, # 是否为消息传递添加自环 
+                edge_dim: int,       # 输入的边特征维度
+                device=torch.device("cpu")
+            ):
+        
+        super(EmbedConv, self).__init__(aggr='add') # 聚合方式 'add' 是消息传递的默认方式之一
 
-        Args:
-            input_dim (int): 节点特征维度。
-            hidden_size (int): 隐藏层维度。
-            layer_N (int): 隐藏线性层数量。
-            use_orthogonal (bool): 是否使用正交初始化。
-            use_ReLU (bool): 是否使用 ReLU。
-            use_layerNorm (bool): 是否使用 LayerNorm。
-            add_self_loop (bool): 是否添加自环。
-            edge_dim (int, optional): 边特征维度。默认为 0。
-        """
-        super(EmbedConv, self).__init__(aggr='add')
-        self._layer_N = layer_N
-        self._add_self_loops = add_self_loop
-        self.active_func = nn.ReLU() if use_ReLU else nn.Tanh()
-        self.layer_norm = nn.LayerNorm(hidden_size) if use_layerNorm else nn.Identity()
-        self.init_method = nn.init.orthogonal_ if use_orthogonal else nn.init.xavier_uniform_
+        self.add_self_loop = add_self_loop
 
-        # --- 移除实体嵌入层 ---
-        # self.entity_embed = nn.Embedding(num_embeddings, embedding_size)
+        self.active_func = nn.ReLU() if use_ReLU else nn.Tanh() # 选择激活函数
+        self.layer_norm = nn.LayerNorm(hidden_size) if use_layerNorm else nn.Identity() # 选择是否层归一化
+        self.init_method = nn.init.orthogonal_ if use_orthogonal else nn.init.xavier_uniform_ # 选择权重初始化方法
 
-        # --- 修改第一个线性层的输入维度 ---
-        # 输入维度 = 节点特征维度 + 边特征维度
-        self.lin1 = nn.Linear(input_dim + edge_dim, hidden_size)
-
-        # --- 后续隐藏层不变 ---
+        # 输入层，输入维度 = 节点特征维度 + 边特征维度
+        self.lin1 = nn.Linear(input_dim + edge_dim, hidden_size) 
+        
+        # 后续隐藏层
         self.layers = nn.ModuleList()
-        for _ in range(layer_N):
+        for _ in range(layer_N): 
             self.layers.append(nn.Linear(hidden_size, hidden_size))
             self.layers.append(self.active_func)
-            self.layers.append(self.layer_norm)
+            if use_layerNorm: 
+                self.layers.append(nn.LayerNorm(hidden_size)) # 注意这里不能重复添加同一个 self.layer_norm
 
-        # 应用初始化
-        self._initialize_weights()
+        self.initialize_weights() # 初始化所有定义的线性层的权重和偏置
 
-    def _initialize_weights(self):
-        """初始化网络权重。"""
+        self.to(device)
+
+    def initialize_weights(self):
         gain = nn.init.calculate_gain('relu' if isinstance(self.active_func, nn.ReLU) else 'tanh')
-        self.init_method(self.lin1.weight, gain=gain)
+        self.init_method(self.lin1.weight, gain=gain) 
         nn.init.constant_(self.lin1.bias, 0)
         for layer in self.layers:
             if isinstance(layer, nn.Linear):
@@ -83,13 +69,12 @@ class EmbedConv(MessagePassing):
                 nn.init.constant_(layer.bias, 0)
 
     def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj,
-                edge_attr: OptTensor = None):
+                    edge_attr: OptTensor = None)-> Tensor:
         """EmbedConv 层的前向传播。"""
-        # 如果需要且没有边特征，添加自环边
-        if self._add_self_loops and edge_attr is None:
+        # 对于孤立节点边特征，添加自环边
+        if self.add_self_loop and edge_attr is None:
             if x.size(0) > 0: # 仅在有节点时添加自环
                 edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
-            # else: print("警告: EmbedConv forward 收到空节点张量，跳过自环添加。")
 
         # 确保 x 是 (源节点特征, 目标节点特征) 的格式
         if isinstance(x, Tensor):
@@ -98,264 +83,265 @@ class EmbedConv(MessagePassing):
         # 开始消息传递
         return self.propagate(edge_index=edge_index, x=x, edge_attr=edge_attr)
 
-    def message(self, x_j: Tensor, edge_attr: OptTensor) -> Tensor:
+    def message(self, x_j: Tensor, edge_attr: Optional[Tensor] = None) -> Tensor:
+        """ 
+        self.propagate() 的调用过程中被隐式执行
+        - x_j: 节点的特征 [num_edges, input_dim]
+        - edge_attr: 对应边的特征 [num_edges, edge_dim]
         """
-        (修改版) 定义如何生成消息，不再处理实体类型。
+        
+        # 拼接源节点特征和边特征作为消息输入
+        message_input = torch.cat([x_j, edge_attr], dim=1) # [num_edges, input_dim + edge_dim]
 
-        Args:
-            x_j (Tensor): 源节点的特征张量，形状 [num_edges, input_dim]。
-            edge_attr (OptTensor): 对应边的特征张量，形状 [num_edges, edge_dim]。
-
-        Returns:
-            Tensor: 生成的消息张量，形状 [num_edges, hidden_size]。
-        """
-        # --- 移除实体类型处理 ---
-        # node_feat_j = x_j[:, :-1]
-        # entity_type_j = x_j[:, -1].long()
-        # entity_embed_j = self.entity_embed(entity_type_j)
-
-        # --- 修改特征拼接 ---
-        # 现在 x_j 就是完整的节点特征
-        if edge_attr is not None:
-            # 拼接节点特征和边特征
-            node_feat = torch.cat([x_j, edge_attr], dim=1)
-        else:
-            # 只有节点特征
-            node_feat = x_j
-
-        # --- 后续线性层处理不变 ---
-        x = self.lin1(node_feat) # lin1 输入维度已修改
+        # 通过第一个输入层
+        x = self.lin1(message_input)
         x = self.active_func(x)
-        x = self.layer_norm(x)
+        if not isinstance(self.layer_norm, nn.Identity): # 只有当 layer_norm 不是 Identity 时才应用
+            x = self.layer_norm(x) # 第一个MLP块后的LayerNorm
 
+        # 通过后续的隐藏层
         for layer in self.layers:
             x = layer(x)
 
         return x
-
+    
 
 class TransformerConvNet(nn.Module):
-    """
-    (修改版) 基于 TransformerConv 的图卷积网络模块。
-    内部的 EmbedConv 不再处理实体类型。
-    """
     def __init__(self,
-                input_dim:int,          # 输入节点特征维度 (不含类型ID)
-                # num_embeddings:int,   # 移除
-                # embedding_size:int,   # 移除
-                hidden_size:int,
-                num_heads:int,
-                concat_heads:bool,
-                layer_N:int,
-                use_ReLU:bool,
-                graph_aggr:str,
-                global_aggr_type:str,
-                embed_hidden_size:int,
+                input_dim:int,      # 节点特征维度
+                edge_dim:int,       # 边特征维度
+                hidden_size:int,    # GNN 隐藏层特征维度
+                num_heads:int,      # GNN 注意力机制头数
+                concat_heads:bool,  # 是否拼接头数
+                layer_N:int,        # GNN卷积层数量
+                use_ReLU:bool,      # 是否使用 ReLU 激活函数
+                # EmbedConv 参数 
+                embed_hidden_size:int, 
                 embed_layer_N:int,
                 embed_use_orthogonal:bool,
                 embed_use_ReLU:bool,
                 embed_use_layerNorm:bool,
-                embed_add_self_loop:bool,
-                # max_edge_dist:float,  # 未直接使用
-                edge_dim:int=1):
-        """
-        (修改版) 初始化 TransformerConvNet。
-
-        Args:
-            input_dim (int): 节点特征维度 (不含类型ID)。
-            # ... (移除 num_embeddings, embedding_size) ...
-            # ... (其他参数不变) ...
-            edge_dim (int, optional): 边特征维度。默认为 1。
-        """
+                embed_add_self_loop:bool, # 是否添加自环以聚合自身信息
+                # 控制最终输出
+                graph_aggr:str,         # "node" 或 "global"
+                global_aggr_type:str,    # "mean", "max", "add" (仅当 graph_aggr="global")
+                device=torch.device("cpu")
+                ):
         super(TransformerConvNet, self).__init__()
-        self.active_func = nn.ReLU() if use_ReLU else nn.Tanh()
-        self.num_heads = num_heads
-        self.concat_heads = concat_heads
-        self.edge_dim = edge_dim
-        self.graph_aggr = graph_aggr
-        self.global_aggr_type = global_aggr_type
+        
+        # 基本属性
+        self.graph_aggr = graph_aggr # 最终聚合方式
+        self.global_aggr_type = global_aggr_type # 图级聚合方式
+        self.activation = nn.ReLU() if use_ReLU else nn.Tanh() # 激活函数
 
-        # --- 修改 EmbedConv 初始化 ---
-        # input_dim 直接使用传入的维度 (不含ID)
-        # 不再传递 num_embeddings, embedding_size
-        self.embed_layer = EmbedConv(input_dim=input_dim, # 不再减 1
-                            # num_embeddings=num_embeddings, # 移除
-                            # embedding_size=embedding_size, # 移除
-                            hidden_size=embed_hidden_size,
-                            layer_N=embed_layer_N,
-                            use_orthogonal=embed_use_orthogonal,
-                            use_ReLU=embed_use_ReLU,
-                            use_layerNorm=embed_use_layerNorm,
-                            add_self_loop=embed_add_self_loop,
-                            edge_dim=edge_dim)
+        # EmbedConv 层 self.embed_layer
+        self.embed_layer = EmbedConv( # 输出维度是 embed_hidden_size
+            input_dim=input_dim, 
+            hidden_size=embed_hidden_size,
+            layer_N=embed_layer_N,
+            use_orthogonal=embed_use_orthogonal,
+            use_ReLU=embed_use_ReLU,
+            use_layerNorm=embed_use_layerNorm,
+            add_self_loop=embed_add_self_loop, 
+            edge_dim=edge_dim
+        )
 
-        # --- TransformerConv 层初始化不变 ---
-        # 第一个 TransformerConv 输入维度等于 EmbedConv 输出维度
-        self.gnn1 = TransformerConv(in_channels=embed_hidden_size,
-                                    out_channels=hidden_size,
-                                    heads=num_heads,
-                                    concat=concat_heads,
-                                    beta=False, dropout=0.0,
-                                    edge_dim=edge_dim, bias=True, root_weight=True)
+        # TransformerConv 层 self.gnn_conv_layers
+        self.gnn_conv_layers = nn.ModuleList() # 创建TransformerConv 层列表
+        size_in_channels = embed_hidden_size # 初始输入维度为 EmbedConv 层输出维度
+        for _ in range(layer_N ): # 构建 TransformerConv 层
+            layer = TransformerConv(
+                in_channels=size_in_channels,
+                out_channels=hidden_size,
+                heads=num_heads,
+                concat=concat_heads,
+                beta=False,
+                dropout=0.0,
+                edge_dim=edge_dim,
+                bias=True,
+                root_weight=True # 允许层学习一个权重给中心节点自身的特征
+            )
+            self.gnn_conv_layers.append(layer) # 堆叠 TransformerConv 层
+            size_in_channels = hidden_size * num_heads if concat_heads else hidden_size # 更新层间维度
+        
+        # TransformerConvNet 的最终输出特征维度 (在池化之前)
+        self.final_node_embedding_dim = size_in_channels
 
-        # 后续 TransformerConv 层
-        self.gnn2 = nn.ModuleList()
-        current_in_channels = hidden_size * num_heads if concat_heads else hidden_size
-        for i in range(layer_N):
-            layer = TransformerConv(in_channels=current_in_channels,
-                                    out_channels=hidden_size,
-                                    heads=num_heads, concat=concat_heads,
-                                    beta=False, dropout=0.0,
-                                    edge_dim=edge_dim, root_weight=True)
-            self.gnn2.append(layer)
-            current_in_channels = hidden_size * num_heads if concat_heads else hidden_size
+        self.to(device)
 
-        self.activation = nn.ReLU() if use_ReLU else nn.Tanh()
+    def forward(self, data: Union[Data, Batch]) -> Tensor:
+        """
+        Return:
+        - x_final_nodes: 
+        形状 (M*N, self.final_node_embedding_dim) 或者 (M, self.final_node_embedding_dim)
+        """
 
-    def forward(self, batch: Union[Data, Batch]) -> Tensor:
-        """TransformerConvNet 的前向传播 (逻辑不变)。"""
-        x, edge_index, edge_attr = batch.x, batch.edge_index, batch.edge_attr
-        batch_indices = batch.batch
+        # 解包 pyg_batch_data 
+        x, edge_index, edge_attr, batch_index = data.x, data.edge_index, data.edge_attr, data.batch
 
-        x = self.embed_layer(x, edge_index, edge_attr) # 调用修改后的 EmbedConv
-        x = self.activation(self.gnn1(x, edge_index, edge_attr))
-        for gnn_layer in self.gnn2:
-            x = self.activation(gnn_layer(x, edge_index, edge_attr))
+        # 初始嵌入层
+        x_embedded = self.embed_layer(x, edge_index, edge_attr) # 形状 [M*N, embed_hidden_size]
 
+        # 通过后续的 TransformerConv 层
+        x_processed = x_embedded # 从 embed_layer 的输出开始
+        for layer in self.gnn_conv_layers:
+            # layer 的输入是上一层处理的结果 x_processed
+            x_processed = self.activation(layer(x_processed, edge_index, edge_attr=edge_attr))
+        
+        x_final_nodes = x_processed  # 形状 [M*N, self.final_node_embedding_dim]
+
+        # 根据聚合方式决定最终输出
         if self.graph_aggr == 'node':
-            return x
+            # 返回所有节点的最终嵌入
+            return x_final_nodes # 形状 (M*N, self.final_node_embedding_dim)     
         elif self.graph_aggr == 'global':
-            pool_func = {'mean': global_mean_pool, 'max': global_max_pool, 'add': global_add_pool}.get(self.global_aggr_type)
+            # 根据全局图聚合方式处理输出
+            pool_func = {'mean': global_mean_pool,
+                        'max': global_max_pool,
+                        'add': global_add_pool}.get(self.global_aggr_type)
             if pool_func:
-                # 确保 batch_indices 不为空且与 x 兼容
-                if batch_indices is not None and batch_indices.max() < len(torch.unique(batch_indices)): # 基础检查
-                    return pool_func(x, batch_indices)
-                else: # 处理 batch_indices 无效或为空的情况
-                    print(f"警告：全局池化收到无效的 batch_indices (max={batch_indices.max() if batch_indices is not None else None}, size={len(torch.unique(batch_indices)) if batch_indices is not None else None}) 或 x 为空 ({x.shape})。返回零张量。")
-                    # 需要知道输出形状来创建零张量
-                    num_graphs = batch_indices.max().item() + 1 if batch_indices is not None and batch_indices.numel() > 0 else 0
-                    out_dim = x.shape[-1]
-                    return torch.zeros((num_graphs, out_dim), device=x.device, dtype=x.dtype)
+                return pool_func(x_final_nodes, batch_index) # 形状: (M, self.final_node_embedding_dim)
             else:
-                raise ValueError(f"不支持的全局聚合类型: {self.global_aggr_type}")
+                raise ValueError(f"不支持的全局图聚合类型: {self.global_aggr_type}")
         else:
             raise ValueError(f"无效的图聚合方式: {self.graph_aggr}")
 
 
-    # --- process_adj 静态方法保持不变 ---
     @staticmethod
-    def process_adj(adj: Tensor, max_edge_dist: float) -> Tuple[Tensor, Tensor]:
+    def process_adj(adj_batch: Tensor, max_edge_dist: float) -> Tuple[Tensor, Tensor]:
         """
-        Return:
-        - edge_index: 边
-        - edge_attr: 边权重
+        Ruturn:
+        - edge_index_batched: 形状 [2, Num_Total_Edges_In_Batch]
+        - edge_attr_batched: 形状 [Num_Edges, 1] (边属性是标量距离)
         """
-        assert adj.dim() >= 2 and adj.dim() <= 3, f"邻接矩阵维度必须是 2 或 3, 得到 {adj.dim()}"
-        assert adj.size(-1) == adj.size(-2), "邻接矩阵必须是方阵"
-        connect_mask = ((adj < max_edge_dist) & (adj > 0)).float()
-        adj_masked = adj * connect_mask
+        assert adj_batch.dim() == 3, f"process_adj 期望3维的 adj_batch (M,N,N), 得到 {adj_batch.dim()}"
+        assert adj_batch.size(1) == adj_batch.size(2), "每个邻接矩阵必须是方阵"
+        
+        # 1. 创建连接掩码并转换为浮点数 (0.0 或 1.0)
+        connect_mask = ((adj_batch < max_edge_dist) & (adj_batch > 0)).float()
+        adj_masked = adj_batch * connect_mask # 形状 (M, N, N), 只保留有效边的距离值
 
-        if adj_masked.dim() == 3:
-            batch_size, num_nodes, _ = adj_masked.shape
-            edge_indices_flat = adj_masked.nonzero(as_tuple=False)
-            if edge_indices_flat.numel() == 0:
-                return torch.empty((2, 0), dtype=torch.int64, device=adj.device), \
-                        torch.empty((0, 1), dtype=torch.float32, device=adj.device)
-            edge_attr = adj_masked[edge_indices_flat[:, 0], edge_indices_flat[:, 1], edge_indices_flat[:, 2]]
-            batch_offset = edge_indices_flat[:, 0] * num_nodes
-            src_global = batch_offset + edge_indices_flat[:, 1]
-            dst_global = batch_offset + edge_indices_flat[:, 2]
-            edge_index = torch.stack([src_global, dst_global], dim=0).to(torch.int64)
-        else:
-            edge_index = adj_masked.nonzero(as_tuple=False).t().contiguous().to(torch.int64)
-            if edge_index.numel() == 0:
-                return torch.empty((2, 0), dtype=torch.int64, device=adj.device), \
-                        torch.empty((0, 1), dtype=torch.float32, device=adj.device)
-            edge_attr = adj_masked[edge_index[0], edge_index[1]]
+        # 2. 找到所有非零元素的索引，以元组形式返回 (b_indices, r_indices, c_indices)
+        indices_tuple = adj_masked.nonzero(as_tuple=True) 
+        # indices_tuple[0] 是批次索引 (b), indices_tuple[1] 是行索引 (r), indices_tuple[2] 是列索引 (c)
+        # 这三个张量的形状都是 (Num_Total_Edges_In_Batch,)
 
-        edge_attr = edge_attr.unsqueeze(1).to(torch.float32)
-        return edge_index, edge_attr
+        # 3. 检查是否有边
+        if indices_tuple[0].numel() == 0: # 检查第一个索引张量的元素数量是否为0
+            return torch.empty((2, 0), dtype=torch.long, device=adj_batch.device), \
+                torch.empty((0, 1), dtype=torch.float32, device=adj_batch.device)
+        
+        # 4. 直接使用元组中的索引来获取边属性
+        #    adj_masked[indices_tuple[0], indices_tuple[1], indices_tuple[2]]
+        #    等效于 adj_masked[b_indices, r_indices, c_indices]
+        edge_attr_flat = adj_masked[indices_tuple] # 形状 (Num_Total_Edges_In_Batch,)
+        
+        # 5. 构建全局 edge_index
+        _ , num_nodes, _ = adj_batch.shape
+        batch_idx_of_edges = indices_tuple[0] # 非零边所在的图的索引
+        src_in_graph = indices_tuple[1]       # 非零边在各自图内的源节点索引
+        dst_in_graph = indices_tuple[2]       # 非零边在各自图内的目标节点索引
+
+        batch_offset = batch_idx_of_edges * num_nodes 
+        src_global = batch_offset + src_in_graph
+        dst_global = batch_offset + dst_in_graph
+        edge_index_batched = torch.stack([src_global, dst_global], dim=0).to(torch.long)
+
+        # 6. 统一 edge_attr 的形状
+        edge_attr_batched = edge_attr_flat.unsqueeze(1).to(torch.float32)
+        
+        return edge_index_batched, edge_attr_batched
 
 
 
 class GNNBase(nn.Module):
-    """
-    (修改版) 基础 GNN 包装类。
-    使用修改后的 TransformerConvNet (不依赖实体嵌入)。
-    """
-    def __init__(self, args: argparse.Namespace,
-                node_obs_dim: int,  # 单个节点特征维度 (不含类型ID)
-                edge_dim: int,      # 边的特征维度
-                graph_aggr: str):   # 聚合方式
-
+    def __init__(self, 
+                args: argparse.Namespace,
+                node_obs_dim: int,  # 单个节点特征的维度, MPGG 中为 6
+                edge_dim: int,      # 边的特征维度 (只用距离，则为1)
+                graph_aggr: str,    # 聚合方式, "node" 或 "global"
+                device=torch.device("cpu")
+                ):
         super(GNNBase, self).__init__()
 
         self.args = args
-        self.hidden_size = args.gnn_hidden_size # GNN 内部隐藏维度 (TransformerConv 输出)
-        self.heads = args.gnn_num_heads
-        self.concat = args.gnn_concat_heads
-        self.graph_aggr = graph_aggr # 保存本实例的聚合方式
+        self.graph_aggr = graph_aggr
 
-        # --- 修改 TransformerConvNet 初始化 ---
-        # input_dim 使用不含 ID 的维度
-        # 不再传递 num_embeddings, embedding_size
-        self.gnn = TransformerConvNet(
-                    input_dim=node_obs_dim, # <--- 使用不含 ID 的维度
-                    edge_dim=edge_dim,
-                    # num_embeddings=args.num_embeddings, # 移除
-                    # embedding_size=args.embedding_size, # 移除
-                    hidden_size=args.gnn_hidden_size,
-                    num_heads=args.gnn_num_heads,
-                    concat_heads=args.gnn_concat_heads,
-                    layer_N=args.gnn_layer_N,
-                    use_ReLU=args.gnn_use_ReLU,
-                    graph_aggr=graph_aggr, # 传递本实例的聚合方式
-                    global_aggr_type=args.global_aggr_type,
-                    embed_hidden_size=args.embed_hidden_size,
-                    embed_layer_N=args.embed_layer_N,
-                    embed_use_orthogonal=args.use_orthogonal,
-                    embed_use_ReLU=args.embed_use_ReLU,
-                    embed_use_layerNorm=args.use_feature_normalization,
-                    embed_add_self_loop=args.embed_add_self_loop,
-                    # max_edge_dist 参数在 TransformerConvNet 内部未使用，但 process_adj 会用
-                    )
+        # 实例化核心的 GNN 网络 (TransformerConvNet)
+        self.gnn_core = TransformerConvNet( # 重命名为 gnn_core 以示区分
+            input_dim=node_obs_dim,
+            edge_dim=edge_dim,
+            # TransformerConvNet 内部使用的参数
+            hidden_size=args.gnn_hidden_size, 
+            num_heads=args.gnn_num_heads,
+            concat_heads=args.gnn_concat_heads,
+            layer_N=args.gnn_layer_N, 
+            use_ReLU=args.gnn_use_ReLU, 
+            # EmbedConv 相关的参数 
+            embed_hidden_size=args.embed_hidden_size,
+            embed_layer_N=args.embed_layer_N,
+            embed_use_orthogonal=args.use_orthogonal, 
+            embed_use_ReLU=args.embed_use_ReLU,
+            embed_use_layerNorm=args.use_feature_normalization, 
+            embed_add_self_loop=args.embed_add_self_loop,
+            # 参数控制 TransformerConvNet 
+            graph_aggr=graph_aggr, 
+            global_aggr_type=args.global_aggr_type, 
+        )
 
-        # --- 输出维度计算保持不变 ---
-        # GNN 最终输出特征的维度 (由最后一个 TransformerConv 层决定)
-        self.out_dim = args.gnn_hidden_size * (args.gnn_num_heads if args.gnn_concat_heads else 1)
-
-    def forward(self, node_obs: Tensor, adj: Tensor, agent_id: Tensor) -> Tensor:
-        """
-        Return:
-        - Tensor: GNN 处理后的特征表示
-        """
-        batch_size, num_nodes, node_obs_dim = node_obs.shape
-
-        # 从距离邻接矩阵中提取边和边权重
-        edge_index, edge_attr = TransformerConvNet.process_adj(adj, self.args.max_edge_dist)
-
-        x = node_obs.reshape(-1, node_obs_dim) # 合并前两个维度
-        batch_indices = torch.arange(batch_size, device=node_obs.device).repeat_interleave(num_nodes)
-        data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, batch=batch_indices)
-
-        # 输出 x_processed 形状:
-        #   - 'node': [batch_size * num_nodes, self.out_dim]
-        #   - 'global': [batch_size, self.out_dim]
-        x_processed = self.gnn(data)
-
-        if self.graph_aggr == 'node':
-            # 需要提取特定节点的特征
-            x_reshaped = x_processed.view(batch_size, num_nodes, self.out_dim)
-            agent_id = agent_id.long()
-            k = agent_id.shape[1]
-            # 使用 gather 提取
-            idx_expanded = agent_id.unsqueeze(-1).expand(-1, k, self.out_dim)
-            gathered_features = x_reshaped.gather(1, idx_expanded) # [batch_size, k, self.out_dim]
-            # 拼接成 [batch_size, k * self.out_dim]
-            output_features = gathered_features.view(batch_size, -1)
-            return output_features
-        elif self.graph_aggr == 'global':
-            # 已经是全局聚合后的结果 [batch_size, self.out_dim]
-            return x_processed
+        # 定义 GNNBase 的输出维度 self.out_dim
+        if args.gnn_concat_heads: # 启用头拼接
+            out_dim = args.gnn_hidden_size * args.gnn_num_heads
         else:
-            raise ValueError(f"GNNBase 不支持的聚合方式: {self.graph_aggr}")
+            out_dim = args.gnn_hidden_size
+        
+        self.out_dim = out_dim 
+
+        self.to(device)
+
+
+    def forward(self, 
+                node_obs: Tensor, # 形状: (M, N, node_feat_dim)
+                adj: Tensor       # 形状: (M, N, N)
+            ) -> Tensor:
+        """
+        Return: gnn_output
+        - 如果 self.graph_aggr == "node":
+            所有 M 个图中所有 N 个节点的嵌入, 形状 (M, N, self.out_dim)。
+        - 如果 self.graph_aggr == "global":
+            所有 M 个图的全局嵌入, 形状 (M, self.out_dim)。
+        """
+        M = node_obs.shape[0] # 图个数
+        N = node_obs.shape[1] # 智能体个数 
+        node_feat_dim = node_obs.shape[2] # 节点特征维度 
+
+        # 构建 PyG Data 对象
+        # print(f"[DEBUG]  adj: {adj.shape}, adj: {adj.dtype}")
+        edge_index, edge_attr = TransformerConvNet.process_adj(adj, self.args.max_edge_dist)  # 处理 M 个距离邻接矩阵              
+        x_nodes = node_obs.reshape(-1, node_feat_dim) # 形状 (M * N, node_feat_dim)    
+        batch_index = torch.arange(M, device=x_nodes.device).repeat_interleave(N) # 形状 (M * N)，值从 0 到 M-1     
+        pyg_batch_data = Data(x=x_nodes, 
+                            edge_index=edge_index, 
+                            edge_attr=edge_attr, 
+                            batch=batch_index, # 用于将扁平化的 x_nodes 中的节点正确地分组回它们各自的原始图
+                            )
+
+        # 送入核心 GNN 网络 (self.gnn_core 即 TransformerConvNet)
+        gnn_output = self.gnn_core(pyg_batch_data) 
+
+        # 对结果进行最终的形状进行检查和调整
+        if self.graph_aggr == 'node':
+            # 形状应该是 (M * N, self.out_dim)
+            if gnn_output.shape[0] != M * N: # 形状检查
+                raise ValueError(f"GNN output shape {gnn_output.shape} unexpected for node-level aggregation. "
+                                 f"Expected first dimension to be M*N = {M * N}.")
+            return gnn_output.view(M, N, self.out_dim)   # reshape 成 (M, N, self.out_dim)      
+        elif self.graph_aggr == 'global':
+            # 形状应该直接是 (M, self.out_dim)
+            if gnn_output.shape[0] != M: # 形状检查
+                raise ValueError(f"GNN output shape {gnn_output.shape} unexpected for global-level aggregation. "
+                                f"Expected first dimension to be M = {M}.")
+            if gnn_output.dim() != 2 or gnn_output.shape[1] != self.out_dim : # 形状检查
+                raise ValueError(f"GNN output shape {gnn_output.shape} unexpected for global-level aggregation. "
+                                f"Expected shape (M, out_dim) = ({M}, {self.out_dim}).")
+            return gnn_output

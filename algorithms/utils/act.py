@@ -55,8 +55,8 @@ class ACTLayer(nn.Module):
     ):
         """
         Rerurn:
-            action_log_probs: 对应输入动作的 log π(a|s)        
-            dist_entropy:     分布的平均熵，用于鼓励探索
+        - action_log_probs: 对应输入动作的 log π(a|s)        
+        - dist_entropy:     分布的平均熵，用于鼓励探索
                 
         """
         

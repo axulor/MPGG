@@ -3,144 +3,183 @@ import argparse
 
 import torch
 from torch import Tensor
-from typing import Tuple
-from algorithms.graph_actor_critic import GR_Actor, GR_Critic
-from utils.util import update_linear_schedule
-
+from typing import Tuple, Any # Any 用于 args
+from algorithms.graph_actor_critic import GR_Actor, GR_Critic # 假设这两个类后续会被修改
+from algorithms.utils.gnn import GNNBase # 导入 GNNBase
+from utils.util import update_linear_schedule, get_shape_from_obs_space, check # 导入 get_shape_from_obs_space
 
 class GR_MAPPOPolicy:
     """
-    MAPPO Policy  class. Wraps actor and critic networks
-    to compute actions and value function predictions.
-
-    args: (argparse.Namespace)
-        Arguments containing relevant model and policy information.
-    obs_space: (gym.Space)
-        Observation space.
-    cent_obs_space: (gym.Space)
-        Value function input space
-        (centralized input for MAPPO, decentralized for IPPO).
-    node_obs_space: (gym.Space)
-        Node observation space
-    edge_obs_space: (gym.Space)
-        Edge dimension in graphs
-    action_space: (gym.Space) a
-        Action space.
-    device: (torch.device)
-        Specifies the device to run on (cpu/gpu).
+    MAPPO Policy 类。封装 Actor 和 Critic 网络，以及 GNN 特征提取器
+    负责计算动作和价值函数预测
     """
 
     def __init__(
         self,
-        args: argparse.Namespace,
+        args: argparse.Namespace, 
         obs_space: gym.Space,
-        cent_obs_space: gym.Space,
-        node_obs_space: gym.Space,
-        edge_obs_space: gym.Space,
-        act_space: gym.Space,
+        share_obs_space: gym.Space, 
+        node_obs_space: gym.Space, 
+        edge_obs_space: gym.Space, 
+        action_space: gym.Space,
         device=torch.device("cpu"),
     ) -> None:
+        
+        # 接收参数
         self.device = device
+        self.args = args
         self.lr = args.lr
         self.critic_lr = args.critic_lr
         self.opti_eps = args.opti_eps
         self.weight_decay = args.weight_decay
+        self.num_agents = args.num_agents 
 
+        # 原始观测空间信息 (主要给 Actor/Critic 的 MLP 部分)
         self.obs_space = obs_space
-        self.share_obs_space = cent_obs_space
-        self.node_obs_space = node_obs_space
-        self.edge_obs_space = edge_obs_space
-        self.act_space = act_space
-        self.split_batch = args.split_batch
-        self.max_batch_size = args.max_batch_size
+        self.share_obs_space = share_obs_space # share_obs_space 用于 Critic 的 MLP 部分
+        self.action_space = action_space
 
-        self.actor = GR_Actor(
+        # 从 Gym Space 获取维度信息
+        node_feat_dim = get_shape_from_obs_space(node_obs_space)[1] 
+        edge_feat_dim = get_shape_from_obs_space(edge_obs_space)[0] 
+
+        # GNN 特征提取器
+        self.actor_gnn = GNNBase( # Actor 使用的 GNN，输出节点级嵌入
             args,
-            self.obs_space,
-            self.node_obs_space,
-            self.edge_obs_space,
-            self.act_space,
-            self.device,
-            self.split_batch,
-            self.max_batch_size,
+            node_obs_dim=node_feat_dim,
+            edge_dim=edge_feat_dim,
+            graph_aggr="node",
+            device= self.device
         )
-        self.critic = GR_Critic(
+        actor_gnn_output_dim = self.actor_gnn.out_dim # 单个节点嵌入的维度
+
+        self.critic_gnn = GNNBase( # Critic 使用的 GNN，输出图级全局嵌入
             args,
-            self.share_obs_space,
-            self.node_obs_space,
-            self.edge_obs_space,
-            self.device,
-            self.split_batch,
-            self.max_batch_size,
+            node_obs_dim=node_feat_dim,
+            edge_dim=edge_feat_dim,
+            graph_aggr="global",
+            device= self.device
+        )
+        critic_gnn_output_dim = self.critic_gnn.out_dim # 全局图嵌入的维度
+
+        #  Actor 和 Critic 网络
+        
+        # Actor 初始化：输入维度 = 个体观测维度 + Actor GNN 输出的节点嵌入维度
+        actor_mlp_input_dim = get_shape_from_obs_space(obs_space)[0] + actor_gnn_output_dim
+        self.actor = GR_Actor( # GR_Actor 的 __init__ 需要修改
+            args,
+            actor_mlp_input_dim, # 输入维度
+            action_space,
+            device=self.device
         )
 
-        self.actor_optimizer = torch.optim.Adam(
-            self.actor.parameters(),
-            lr=self.lr,
-            eps=self.opti_eps,
-            weight_decay=self.weight_decay,
+        # Critic 初始化：输入维度 = 中心化观测维度 + Critic GNN 输出的全局图嵌入维度
+        critic_mlp_input_dim = get_shape_from_obs_space(share_obs_space)[0] + critic_gnn_output_dim
+        self.critic = GR_Critic( # GR_Critic 的 __init__ 需要修改
+            args,
+            critic_mlp_input_dim, # 输入维度
+            device=self.device
         )
-        self.critic_optimizer = torch.optim.Adam(
-            self.critic.parameters(),
-            lr=self.critic_lr,
-            eps=self.opti_eps,
-            weight_decay=self.weight_decay,
-        )
+        
+        # 初始化优化器
+        actor_params = list(self.actor.parameters()) + list(self.actor_gnn.parameters())
+        self.actor_optimizer = torch.optim.Adam(actor_params, lr=self.lr, eps=self.opti_eps, weight_decay=self.weight_decay)
+        
+        critic_params = list(self.critic.parameters()) + list(self.critic_gnn.parameters())
+        self.critic_optimizer = torch.optim.Adam(critic_params, lr=self.critic_lr, eps=self.opti_eps, weight_decay=self.weight_decay)
 
     def lr_decay(self, episode: int, episodes: int) -> None:
         """
-        Decay the actor and critic learning rates.
-        episode: (int)
-            Current training episode.
-        episodes: (int)
-            Total number of training episodes.
+        学习率衰减        
         """
-        update_linear_schedule(
-            optimizer=self.actor_optimizer,
-            epoch=episode,
-            total_num_epochs=episodes,
-            initial_lr=self.lr,
-        )
-        update_linear_schedule(
-            optimizer=self.critic_optimizer,
-            epoch=episode,
-            total_num_epochs=episodes,
-            initial_lr=self.critic_lr,
-        )
+        update_linear_schedule(self.actor_optimizer, episode, episodes, self.lr)
+        update_linear_schedule(self.critic_optimizer, episode, episodes, self.critic_lr)
 
-    def get_actions(self, cent_obs, obs, node_obs, adj, agent_id, share_agent_id):
-
-        actions, action_log_probs = self.actor.forward(obs, node_obs, adj, agent_id)
-
-        values = self.critic.forward(cent_obs, node_obs, adj, share_agent_id)
-
-        return values, actions, action_log_probs
-
-    
-    def get_values(self, cent_obs, node_obs, adj, share_agent_id):
+    def get_actions(self, 
+                    obs: Tensor,                # (M*N, D_obs)
+                    node_obs: Tensor,           # (M, N, D_obs)
+                    adj: Tensor,                # (M, N, N)
+                    agent_id: Tensor,           # (M*N, 1) 
+                    env_id: Tensor,             # (M*N, 1)
+                ) -> Tuple[Tensor, Tensor, Tensor]:
         """
         Return:
-        - values: critic 给出的价值估计
+        - actions: 样本中每个智能体采取的动作
+        - action_log_probs: 动作的对数概率
         """
-        
-        values = self.critic.forward(cent_obs, node_obs, adj, share_agent_id)
 
+        # Actor GNN 特征提取
+        actor_gnn_output = self.actor_gnn(node_obs, adj)  # (M, N, D_actor_gnn_out)
+        env_ids = env_id.squeeze(-1).long() # 形状 (M*N)
+        agent_ids = agent_id.squeeze(-1).long() # 形状 (M*N)
+        actor_gnn_feat = actor_gnn_output[env_ids, agent_ids, :] # 取出对应环境, 对应智能体的嵌入, 形状 (M*N, D_actor_gnn_out)
+
+        # # 打印输出的特征形状
+        # print(f"--- Printing the output of the feature shape ---")
+        # print(f"  actor_gnn_feat: {actor_gnn_feat.shape}, dtype: {actor_gnn_feat.dtype}, device: {actor_gnn_feat.device}")
+        # print(f"--- Printing completed ---")
+        
+        # 送入 Actor 网络前向传播获取动作和动作概率 
+        actions, action_log_probs = self.actor.forward(obs, actor_gnn_feat) # 拼接各自的观测
+
+        # # 打印动作和概率形状
+        # print(f"--- Printing action and probability shape ---")
+        # print(f"  actions: {actions.shape}, dtype: {actions.dtype}, device: {actions.device}")
+        # print(f"  action_log_probs: {action_log_probs.shape}, dtype: {action_log_probs.dtype}, device: {action_log_probs.device}")
+        # print(f"--- Printing completed ---")
+
+        return actions, action_log_probs
+    
+    def get_values(self, 
+                node_obs: Tensor,    # (M, N, D_obs)
+                adj: Tensor,         # (M, N, N)
+                share_obs: Tensor # (M*N, D_share_obs)
+                ) -> Tensor:
+        """
+        Return:
+        - values: 全局观测下的状态价值
+        """
+        # Critic GNN 特征提取
+        critic_gnn_output = self.critic_gnn(node_obs, adj) # 形状 (M, D_critic_gnn_output)
+        
+        # 扩展 Critic GNN 特征
+        critic_gnn_feat = critic_gnn_output.repeat_interleave(self.num_agents, dim=0) # 形状 (M*N, D_critic_gnn_output)
+        
+        # 调用 Critic 网络前向传播获取价值
+        values = self.critic.forward(share_obs, critic_gnn_feat) # 拼接全局观测
+
+        # print(f"--- Printing values shape ---")
+        # print(f"  values: {values.shape}, dtype: {values.dtype}, device: {values.device}")
+        # print(f"--- Printing completed ---")
+        
         return values
 
-    def evaluate_actions(self, cent_obs, obs, node_obs,adj, agent_id, share_agent_id, action):
+    def evaluate_actions(self, 
+                        obs: Tensor, 
+                        node_obs: Tensor, 
+                        adj: Tensor, 
+                        agent_id: Tensor,
+                        env_id: Tensor,
+                        actions: Tensor, 
+                        share_obs: Tensor
+                        ) -> Tuple[Tensor, Tensor, Tensor]:
 
-        action_log_probs, dist_entropy = self.actor.evaluate_actions(
-            obs,
-            node_obs,
-            adj,
-            agent_id,
-            action)
-
-        values = self.critic.forward(cent_obs, node_obs, adj, share_agent_id)
-        return values, action_log_probs, dist_entropy
-
-    def act(self,obs,node_obs,adj,agent_id) :
-
-        actions, _ = self.actor.forward(obs, node_obs, adj, agent_id)
+        # Actor GNN 特征提取
+        actor_gnn_output = self.actor_gnn(node_obs, adj)
+        env_ids = torch.arange(node_obs.shape[0], device=node_obs.device)
+        agent_ids = agent_id.squeeze(-1).long()
+        actor_gnn_feat = actor_gnn_output[env_ids, agent_ids, :]
         
-        return actions
+        # 获取动作评估结果
+        action_log_probs, dist_entropy = self.actor.evaluate_actions(
+            obs, 
+            actor_gnn_feat, 
+            actions # 传入实际执行的动作
+        )
+
+        # 获取动作价值
+        critic_gnn_feat = self.critic_gnn(node_obs, adj)
+        values = self.critic.forward(share_obs, critic_gnn_feat)
+        
+        return values, action_log_probs, dist_entropy
+    
