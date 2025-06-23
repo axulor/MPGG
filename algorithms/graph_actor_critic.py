@@ -7,7 +7,8 @@ import gymnasium as gym
 from algorithms.utils.mlp import MLPBase
 from algorithms.utils.act import ACTLayer
 from algorithms.utils.popart import PopArt # PopArt 仍然在输出层使用
-from algorithms.utils.util import init, check # init 用于初始化 PopArt/Linear 输出层
+from algorithms.utils.util import init, check
+from utils.util import get_shape_from_obs_space
 
 
 class GR_Actor(nn.Module):
@@ -21,7 +22,7 @@ class GR_Actor(nn.Module):
         actor_mlp_input_dim: int, # 个体观测维度 + GNN节点嵌入维度
         action_space: gym.Space,  # 动作空间用于 ACTLayer
         device=torch.device("cpu"),
-        split_batch: bool = False, 
+        split_batch: bool = True, 
         max_batch_size: int = 1024, # 默认最大batch_size
     ) -> None:
         
@@ -38,7 +39,6 @@ class GR_Actor(nn.Module):
         self.max_batch_size = max_batch_size
         self.tpdv = dict(dtype=torch.float32, device=device)
 
-
         # 实例化 MLPBase
         self.base = MLPBase(args, input_dim=actor_mlp_input_dim) # input_dim 是拼接后的总维度
 
@@ -53,8 +53,8 @@ class GR_Actor(nn.Module):
                 actor_gnn_feat: Tensor    # GNN处理后的节点嵌入, 形状 (B, D_actor_gnn_out)
             ) -> Tuple[Tensor, Tensor]:
         """
-        接收个体观测和预计算的GNN节点嵌入, 拼接后通过MLP和ACTLayer输出动作。
-        B 是当前处理的批次大小 (可能是 M*N, 或更小的 chunk)。
+        接收个体观测和预计算的GNN节点嵌入, 拼接后通过MLP和ACTLayer输出动作
+        B 是当前处理的批次大小 M*N
         """
         obs = check(obs).to(**self.tpdv)
         actor_gnn_feat = check(actor_gnn_feat).to(**self.tpdv)
@@ -145,7 +145,6 @@ class GR_Actor(nn.Module):
             if dist_entropy.shape: # 取平均
                 dist_entropy = dist_entropy.mean()
 
-
         return action_log_probs, dist_entropy
 
 
@@ -156,35 +155,35 @@ class GR_Critic(nn.Module):
     def __init__(
         self,
         args: argparse.Namespace,
-        critic_mlp_input_dim: int, # 中心化观测维度 + 全局GNN嵌入维度 
+        node_obs_space: gym.Space, # 全局观测的空间
+        critic_mlp_input_dim: int, 
         device=torch.device("cpu"),
-        split_batch: bool = False,
-        max_batch_size: int = 1024, 
     ) -> None:
         
         super(GR_Critic, self).__init__()
 
         self.args = args
-        self.hidden_size = args.hidden_size # MLPBase 和 PopArt/Linear 输出层可能用到
+        self.hidden_size = args.hidden_size # 输出层可能用到
         self.use_orthogonal = args.use_orthogonal # 用于输出层初始化
-
         self.use_popart = args.use_popart # PopArt 的使用与否
-        self.split_batch = split_batch
-        self.max_batch_size = max_batch_size
         self.tpdv = dict(dtype=torch.float32, device=device)
         
-        # 初始化方法选择
-        init_method = [nn.init.xavier_uniform_, nn.init.orthogonal_][self.use_orthogonal]
+        _, node_feat_dim = get_shape_from_obs_space(node_obs_space)
+        self.processor_dim = self.hidden_size // 2 # 输出定为隐藏层的一半
+        self.node_obs_processor = nn.Sequential(
+            nn.Linear(node_feat_dim, self.processor_dim),
+            nn.ReLU()
+        )
 
-
-        # MLPBase 直接接收组合后的特征维度
-        self.base = MLPBase(args, input_dim=critic_mlp_input_dim)
+        # MLPBase 
+        self.base = MLPBase(args, input_dim = critic_mlp_input_dim)
 
         # 输出层 (v_out)
+        init_method = [nn.init.xavier_uniform_, nn.init.orthogonal_][self.use_orthogonal]  # 初始化方法选择
         def init_linear_or_popart(m_layer): # 辅助函数简化初始化
             return init(m_layer, init_method, lambda x: nn.init.constant_(x, 0))
 
-        if self.use_popart:
+        if self.use_popart: # PopArt input dim is hidden_size, output is 1
             self.v_out = init_linear_or_popart(PopArt(self.hidden_size, 1, device=device))
         else:
             self.v_out = init_linear_or_popart(nn.Linear(self.hidden_size, 1))
@@ -192,45 +191,31 @@ class GR_Critic(nn.Module):
         self.to(device)
 
     def forward(self, 
-                share_obs: Tensor,        # 中心化/个体观测, 形状 (B, D_share_obs)
-                critic_gnn_feat: Tensor     # GNN处理后的图级全局嵌入, 形状 (B, D_critic_gnn_global_out)
+                node_obs: Tensor,          # 中心化/个体观测, 形状 (M, N, D_obs)
+                critic_gnn_feat: Tensor     # GNN处理后的图级全局嵌入, 形状 (M, D_critic_gnn_out) 
                 ) -> Tensor:
         """
         接收中心化观测和预计算的图级全局GNN嵌入。
         根据 args.use_cent_obs 决定是否拼接它们, 然后通过MLP和输出层得到价值预测。
         B 是当前处理的批次大小。
         """
-        share_obs = check(share_obs).to(**self.tpdv)
+
+        # 检查是否为tensor
+        node_obs = check(node_obs).to(**self.tpdv)
         critic_gnn_feat = check(critic_gnn_feat).to(**self.tpdv)
 
-        # 配置组合特征
-        if self.args.use_cent_obs:  # 拼接全局观测信息和全局图特征
-            combined_features = torch.cat([share_obs, critic_gnn_feat], dim=1)
-        else: # 如果不使用额外的中心化观测
-            combined_features = critic_gnn_feat
+        # 处理全局特征
+        processed_obs = self.node_obs_processor(node_obs) # 线性层 (M, N, D_proc)
+        pooled_obs = torch.mean(processed_obs, dim=1)         # 池化 (M, D_proc)
 
-        # 手动分块处理 MLP 部分 (与 GR_Actor.forward 中类似)
-        if self.split_batch and combined_features.shape[0] > self.max_batch_size:
-            critic_mlp_outputs_list = []
-            num_chunks = (combined_features.shape[0] + self.max_batch_size - 1) // self.max_batch_size
+        # 拼接全局特征与全局图嵌入
+        combined_features = torch.cat([pooled_obs, critic_gnn_feat], dim=1)
 
-            for i in range(num_chunks):
-                chunk_start = i * self.max_batch_size
-                chunk_end = min((i + 1) * self.max_batch_size, combined_features.shape[0])
-                
-                feature_chunk = combined_features[chunk_start:chunk_end]
-                if feature_chunk.shape[0] == 0: continue
-
-                mlp_output_chunk = self.base(feature_chunk) # 通过 MLPBase
-                critic_mlp_outputs_list.append(mlp_output_chunk)
-            
-            final_mlp_output = torch.cat(critic_mlp_outputs_list, dim=0) # (B, self.hidden_size)
-        else:
-            # 直接通过 MLPBase
-            final_mlp_output = self.base(combined_features) # (B, self.hidden_size)
+        # 直接通过 MLPBase
+        final_mlp_output = self.base(combined_features) # (M, self.hidden_size)
 
         # 通过价值输出层得到价值预测
-        values = self.v_out(final_mlp_output) # (B, 1)
+        values = self.v_out(final_mlp_output) #(M, 1)
 
         return values
 

@@ -46,8 +46,8 @@ all_args = SimpleNamespace(
     num_env_steps=500000,          # MODIFICATION: Increased total steps for more learning
 
     # --- 环境特定参数 ---
-    num_agents=25,
-    world_size=10,
+    num_agents=10,
+    world_size=8,
     speed=0.05,
     radius=2.0,
     cost=1.0, 
@@ -93,10 +93,8 @@ all_args = SimpleNamespace(
 
 
     # === PPO 算法参数 ===
-    ppo_epoch=4,                   # PPO 更新时数据重复利用次数
-    num_mini_batch=32,               # Mini-batch 数量。如果 episode_length * n_rollout_threads 很大，可以适当增加
-                                    # 例如，如果 L=512, N_threads=8, 总样本=4096*num_agents.
-                                    # mini_batch_size = 4096*num_agents / 8. 确保 mini_batch_size 合理。
+    ppo_epoch=2,                   # PPO 更新时数据重复利用次数
+    mini_batch_size = 800,
     entropy_coef=0.01,              # 原来是 0.05. 尝试 0.01, 0.005.
     value_loss_coef=1.0,
     lr=1e-4,                        # 学习率可以稍后调整，先看大结构是否稳定
@@ -121,7 +119,7 @@ all_args = SimpleNamespace(
     # === 评估参数 ===
     use_eval=True,
     n_eval_rollout_threads=8,       # 评估并行环境数 (可以与训练并行数不同)
-    eval_interval=10,              # MODIFICATION: Increased eval interval
+    eval_interval=1,              # MODIFICATION: Increased eval interval
     eval_rounds = 80,
     eval_steps_per_round = 500,     # 评估时每轮的步数
 

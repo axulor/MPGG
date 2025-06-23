@@ -1,3 +1,5 @@
+# fast_eval.py
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -6,32 +8,29 @@ from pathlib import Path
 import time
 from tqdm import tqdm 
 
-# 假设 _t2n 在 utils.util 中或在此处定义
-# (如果你的 _t2n 在别处，确保导入路径正确)
-# from utils.util import _t2n 
-def _t2n(x: Optional[torch.Tensor]) -> Optional[np.ndarray]: # 允许 x 为 None
+def _t2n(x: Optional[torch.Tensor]) -> Optional[np.ndarray]:
     if x is None: return None
     return x.detach().cpu().numpy()
 
 class FastEvaluate:
     def __init__(self,
                 all_args: Any, 
-                policy: Any,   # MARL policy network (GR_MAPPOPolicy instance)
-                eval_envs: Any, # 并行评估环境 (GraphSubprocVecEnv instance)
+                policy: Any,
+                eval_envs: Any,
                 run_dir: Path,
                 ):
+        # This __init__ method is already well-designed and does not need changes.
+        # It correctly infers all necessary parameters.
         print(f"--- Initializing FastEvaluate Class ---")
         self.all_args = all_args
         self.policy = policy 
         self.eval_envs = eval_envs
         
-        # 获取设备信息，用于将 NumPy 数据转换为 Tensor
-        # 假设 all_args 中有 device 属性，或者 policy 对象有 device 属性
         if hasattr(all_args, 'device') and isinstance(all_args.device, torch.device):
             self.device = all_args.device
-        elif hasattr(policy, 'device') and isinstance(policy.device, torch.device): # policy 通常有 device
+        elif hasattr(policy, 'device') and isinstance(policy.device, torch.device):
             self.device = policy.device
-        else: # Fallback
+        else:
             self.device = torch.device("cuda" if all_args.cuda and torch.cuda.is_available() else "cpu")
             print(f"Warning: Device not explicitly found in all_args or policy. Defaulting FastEvaluate device to {self.device}")
 
@@ -42,16 +41,14 @@ class FastEvaluate:
         self.plot_save_dir.mkdir(parents=True, exist_ok=True)
         
         self.num_agents = getattr(all_args, 'num_agents')
-        self.n_eval_rollout_threads = getattr(all_args, 'n_eval_rollout_threads') # 这是 M
+        self.n_eval_rollout_threads = getattr(all_args, 'n_eval_rollout_threads')
         
         self.eval_rounds = getattr(all_args, 'eval_rounds')
         self.eval_steps_per_round = getattr(all_args, 'eval_steps_per_round')
         
-        # 获取动作维度
-        # 假设 eval_envs.action_space 是一个列表，每个元素是单个智能体的 Box 空间
         if self.eval_envs.action_space and isinstance(self.eval_envs.action_space, list) and len(self.eval_envs.action_space) > 0:
             self.action_dim = self.eval_envs.action_space[0].shape[0]
-        else: # Fallback for single Box or other structures (less common for multi-agent)
+        else:
             try:
                 self.action_dim = self.eval_envs.action_space.shape[0]
             except:
@@ -63,70 +60,47 @@ class FastEvaluate:
 
         print(f"  FastEvaluator Config: Rounds={self.eval_rounds}, Steps/Round={self.eval_steps_per_round}, Device={self.device}")
         print(f"  Evaluation plots will be saved to: {self.plot_save_dir}")
-        print(f"DEBUG: FastEvaluate INSTANCE CREATED with id: {id(self)}") # <--- 新增打印
+        print(f"DEBUG: FastEvaluate INSTANCE CREATED with id: {id(self)}")
         print("--- FastEvaluate Class Initialized ---")
 
     def get_policy_names(self) -> List[str]:
+        # This method is correct.
         names = []
         if self.policy is not None: 
             names.append("marl")
         names.extend(["random_walk", "static"])
-        return list(set(names)) # 使用 set 确保唯一性
+        return list(set(names))
 
-    @torch.no_grad() # 评估不需要梯度
+    @torch.no_grad()
     def _run_one_policy_evaluation(self, policy_name: str) -> Dict[str, np.ndarray]:
-
-        if policy_name in ["random_walk", "static"]:
-            print(f"DEBUG: FastEvaluate._run_one_policy_evaluation CALLED FOR {policy_name.upper()}")
-
         all_round_coop_trajectories = np.full((self.eval_rounds, self.eval_steps_per_round), np.nan, dtype=np.float32)
         all_round_reward_trajectories = np.full((self.eval_rounds, self.eval_steps_per_round), np.nan, dtype=np.float32)
 
         if policy_name == "marl" and self.policy is not None:
-            # 设置 Policy 内部所有相关模块 (Actor, Critic, GNNs) 为评估模式
-            if hasattr(self.policy, 'actor') and self.policy.actor is not None: self.policy.actor.eval()
-            if hasattr(self.policy, 'critic') and self.policy.critic is not None: self.policy.critic.eval()
-            if hasattr(self.policy, 'actor_gnn') and self.policy.actor_gnn is not None: self.policy.actor_gnn.eval()
-            if hasattr(self.policy, 'critic_gnn') and self.policy.critic_gnn is not None: self.policy.critic_gnn.eval()
+            self.policy.prep_evaluating()
         
         print(f"    Evaluating policy '{policy_name}':")
         for r_idx in tqdm(range(self.eval_rounds), desc=f"      Policy '{policy_name}' Rounds", leave=False, ncols=100):
             
-            # 从环境获取的是 NumPy 数组
-            # obs_np: (M, N, D_obs)
-            # agent_id_np: (M, N, 1)
-            # node_obs_all_agents_np: (M, N, N_nodes, D_node_raw)
-            # adj_all_agents_np: (M, N, N_nodes, N_nodes)
-            obs_np, agent_id_np, node_obs_all_agents_np, adj_all_agents_np = self.eval_envs.reset() 
+            obs_np, adj_np = self.eval_envs.reset()
             
-            # 为 GNN 准备 M 份独特的图数据 (仍然是 NumPy)
-            # node_obs_M_unique_np 形状 (M, N_nodes, D_node_raw)
-            unique_node_obs_np = node_obs_all_agents_np[:, 0, :, :] # 取每个线程的第一个智能体携带的全局图
-            # adj_M_unique_np 形状 (M, N_nodes, N_nodes)
-            unique_adj_np = adj_all_agents_np[:, 0, :, :]
-
             for step_idx in range(self.eval_steps_per_round):
                 actions_to_env_np = np.zeros((self.n_eval_rollout_threads, self.num_agents, self.action_dim), dtype=np.float32)
 
                 if policy_name == "marl":
-                    # --- 准备 GR_MAPPOPolicy.get_actions 的输入 (转换为 Tensors) ---
-                    # 1. 扁平化的个体观测 (M*N, D_obs)
-                    flat_obs_t = torch.from_numpy(np.concatenate(obs_np)).float().to(self.device)
+                    # ... (MARL action generation logic is correct) ...
+                    flat_obs_t = torch.from_numpy(obs_np.reshape(-1, obs_np.shape[-1])).float().to(self.device)
+                    node_obs_for_gnn_t = torch.from_numpy(obs_np).float().to(self.device)
+                    adj_for_gnn_t = torch.from_numpy(adj_np).float().to(self.device)
                     
-                    # 2. M份独特图的节点和邻接数据 (M, N_nodes, D_node) 和 (M, N_nodes, N_nodes)
-                    node_obs_for_gnn_t = torch.from_numpy(unique_node_obs_np).float().to(self.device)
-                    adj_for_gnn_t = torch.from_numpy(unique_adj_np).float().to(self.device)
+                    agent_id_np = np.arange(self.num_agents)[np.newaxis, :, np.newaxis]
+                    agent_id_np = np.repeat(agent_id_np, self.n_eval_rollout_threads, axis=0)
+                    flat_agent_id_t = torch.from_numpy(agent_id_np.reshape(-1, 1)).long().to(self.device)
                     
-                    # 3. 扁平化的 agent_id 和 env_id 用于挑选 (M*N, 1)
-                    flat_agent_id_t = torch.from_numpy(np.concatenate(agent_id_np)).long().to(self.device)
+                    env_id_np = np.arange(self.n_eval_rollout_threads)[:, np.newaxis, np.newaxis]
+                    env_id_np = np.repeat(env_id_np, self.num_agents, axis=1)
+                    flat_env_id_t = torch.from_numpy(env_id_np.reshape(-1, 1)).long().to(self.device)
                     
-                    env_indices = np.arange(self.n_eval_rollout_threads)
-                    flat_env_id_t = torch.from_numpy(
-                        np.repeat(env_indices, self.num_agents).reshape(-1, 1)
-                    ).long().to(self.device)
-                    # --- 输入准备完毕 ---
-                    
-                    # 调用 GR_MAPPOPolicy.get_actions (它现在只返回 actions, action_log_probs)
                     torch_actions, _ = self.policy.get_actions(
                         flat_obs_t,
                         node_obs_for_gnn_t,
@@ -136,62 +110,49 @@ class FastEvaluate:
                     )
                     actions_from_policy_flat_np = _t2n(torch_actions)
                     if actions_from_policy_flat_np is None: 
-                        actions_from_policy_flat_np = np.random.rand(
-                            self.n_eval_rollout_threads * self.num_agents, self.action_dim
-                        ) * 2 - 1 # Fallback
+                        actions_from_policy_flat_np = np.random.rand(self.n_eval_rollout_threads * self.num_agents, self.action_dim) * 2 - 1
                     
-                    actions_to_env_np = actions_from_policy_flat_np.reshape(
-                        self.n_eval_rollout_threads, self.num_agents, -1
-                    )
+                    actions_to_env_np = actions_from_policy_flat_np.reshape(self.n_eval_rollout_threads, self.num_agents, -1)
                 
                 elif policy_name == "random_walk":
-                    # self.eval_envs.action_space 是一个列表，取第一个作为代表
+                    # ... (random_walk logic is correct) ...
                     action_space_sample = self.eval_envs.action_space[0]
-                    low = action_space_sample.low
-                    high = action_space_sample.high
-                    
-                    # 定义期望的输出形状
+                    low, high = action_space_sample.low, action_space_sample.high
                     target_shape = (self.n_eval_rollout_threads, self.num_agents, self.action_dim)
-                    
-                    # 一次性生成所有随机动作
-                    actions_to_env_np = np.random.uniform(low=low, 
-                                                          high=high, 
-                                                          size=target_shape).astype(np.float32)
+                    actions_to_env_np = np.random.uniform(low=low, high=high, size=target_shape).astype(np.float32)
                 
                 elif policy_name == "static":
+                    # ... (static logic is correct) ...
                     actions_to_env_np.fill(0.0)
                 
-                # 执行环境步骤
-                next_obs_tuple = self.eval_envs.step(actions_to_env_np)
-                next_obs_np, next_agent_id_np, next_node_obs_all_agents_np, next_adj_all_agents_np, rewards, dones, infos = next_obs_tuple
+                next_obs_np, rewards, next_adj_np, dones, infos = self.eval_envs.step(actions_to_env_np)
                 
-                # 为 GNN 准备下一轮的独特图输入 (NumPy)
-                next_unique_node_obs_np = next_node_obs_all_agents_np[:, 0, :, :]
-                next_unique_adj_np = next_adj_all_agents_np[:, 0, :, :]
-
-                # --- 记录当前步骤的指标 (与之前相同) ---
+                # --- [FIXED] Correctly process the `infos` list of dictionaries ---
                 step_coop_rates_this_step: List[float] = []
                 step_rewards_this_step: List[float] = [] 
                 for thread_idx in range(self.n_eval_rollout_threads):
-                    if infos[thread_idx] and len(infos[thread_idx]) > 0:
-                        agent0_info = infos[thread_idx][0]
-                        cr = agent0_info.get("step_cooperation_rate")
-                        ar_manual = np.mean(rewards[thread_idx]) 
-                        if cr is not None: step_coop_rates_this_step.append(cr)
-                        if ar_manual is not None: step_rewards_this_step.append(ar_manual)
+                    info = infos[thread_idx] # `info` is now a dictionary
+                    if info: # Check if the dictionary is not empty
+                        cr = info.get("step_cooperation_rate")
+                        ar_manual = np.mean(rewards[thread_idx])
+                        
+                        if cr is not None:
+                            step_coop_rates_this_step.append(cr)
+                        
+                        # Always append reward, even if it's 0 or nan
+                        step_rewards_this_step.append(ar_manual)
                 
                 all_round_coop_trajectories[r_idx, step_idx] = np.mean(step_coop_rates_this_step) if step_coop_rates_this_step else np.nan
                 all_round_reward_trajectories[r_idx, step_idx] = np.mean(step_rewards_this_step) if step_rewards_this_step else np.nan
-                # --- 指标记录结束 ---
+                # --- Metric recording logic fixed ---
 
-                # 更新状态以供下一评估步骤使用 (仍然是 NumPy 数组)
-                obs_np, agent_id_np = next_obs_np, next_agent_id_np
-                unique_node_obs_np, unique_adj_np = next_unique_node_obs_np, next_unique_adj_np # 更新为 GNN 的输入
+                obs_np = next_obs_np
+                adj_np = next_adj_np
                 
                 if np.all(dones): 
                     break 
         
-        # ... (计算均值和标准差曲线的逻辑不变) ...
+        # ... (final calculation of mean/std is correct) ...
         mean_coop_curve = np.nanmean(all_round_coop_trajectories, axis=0)
         std_coop_curve = np.nanstd(all_round_coop_trajectories, axis=0)
         mean_reward_curve = np.nanmean(all_round_reward_trajectories, axis=0)
@@ -205,28 +166,25 @@ class FastEvaluate:
         return policy_eval_results
 
     def eval_policy(self) -> Dict[str, Any]:
+        # This method's logic is about caching and orchestration. It is correct and does not need changes.
         all_policies_results: Dict[str, Dict[str, np.ndarray]] = {}
-        
-        policy_names_to_evaluate_this_run = self.get_policy_names() # 获取所有当前可评估的策略
-
+        policy_names_to_evaluate_this_run = self.get_policy_names()
         print(f"  Starting evaluation for policies: {policy_names_to_evaluate_this_run}...")
         
-        # 先处理 MARL 策略 (如果存在)
         if "marl" in policy_names_to_evaluate_this_run:
             print(f"    Re-evaluating MARL policy...")
             results_marl = self._run_one_policy_evaluation("marl")
             all_policies_results["marl"] = results_marl
 
-        # 再处理基准策略
         baseline_policy_names = ["random_walk", "static"]
-        baselines_actually_ran_this_time = False # 标记本次调用是否实际运行了基准
+        baselines_actually_ran_this_time = False
 
         for policy_name in baseline_policy_names:
-            if policy_name in policy_names_to_evaluate_this_run: # 确保它在可评估列表中
+            if policy_name in policy_names_to_evaluate_this_run:
                 if not self._baselines_evaluated or policy_name not in self._baseline_results_cache:
                     if not self._baselines_evaluated:
                          print(f"    Evaluating baseline policy '{policy_name}' (first time or cache miss)...")
-                    else: # 标志为True但缓存中没有
+                    else:
                          print(f"    WARNING: Baseline '{policy_name}' expected in cache but not found! Re-evaluating.")
                     
                     results_baseline = self._run_one_policy_evaluation(policy_name)
@@ -237,7 +195,6 @@ class FastEvaluate:
                     print(f"    Loading baseline policy '{policy_name}' from cache.")
                     all_policies_results[policy_name] = self._baseline_results_cache[policy_name]
         
-        # 只有当这次实际运行了基准评估后，才将 _baselines_evaluated 设为 True
         if baselines_actually_ran_this_time:
             self._baselines_evaluated = True
             print(f"  DEBUG: Baselines that were run have been cached. self._baselines_evaluated is now True.")

@@ -35,11 +35,13 @@ class GR_MAPPO():
 
         self.clip_param = args.clip_param
         self.ppo_epoch = args.ppo_epoch
-        self.num_mini_batch = args.num_mini_batch
+        batch_size = args.n_rollout_threads * args.episode_length * args.num_agents
+        self.num_mini_batch = batch_size // args.mini_batch_size
         self.value_loss_coef = args.value_loss_coef
         self.entropy_coef = args.entropy_coef
         self.max_grad_norm = args.max_grad_norm       
         self.huber_delta = args.huber_delta
+        self.mini_batch_size = args.mini_batch_size
 
         self.use_max_grad_norm = args.use_max_grad_norm
         self.use_clipped_value_loss = args.use_clipped_value_loss
@@ -95,7 +97,7 @@ class GR_MAPPO():
 
         return value_loss
     
-    def ppo_update(self, sample:Tuple):
+    def _ppo_update(self, sample:Tuple):
         """
         Return:
         - value_loss:          价值损失
@@ -106,9 +108,12 @@ class GR_MAPPO():
         - imp_weights:         重要性采样权重
         """
         # 解包样本参数
-        share_obs_batch, obs_batch, node_obs_batch, adj_batch, agent_id_batch, \
-        share_agent_id_batch, actions_batch, values_batch, returns_batch, \
-        action_log_probs_batch, advantages_batch, env_id_batch = sample
+        obs_batch, node_obs_batch, adj_batch, agent_id_batch, \
+        env_id_batch, actions_batch, values_batch, returns_batch, \
+        action_log_probs_batch, advantages_batch = sample
+        # print(f"[DEBUG]  obs_batch: {obs_batch.shape}, obs_batch: {obs_batch.dtype}")
+        # print(f"[DEBUG]  adj_batch: {adj_batch.shape}, adj_batch: {adj_batch.dtype}")
+        print(f"\n")
 
         # 将需要计算的张量转移到设备
         action_log_probs_batch = check(action_log_probs_batch).to(**self.tpdv)
@@ -122,17 +127,15 @@ class GR_MAPPO():
         agent_id_batch =  check(agent_id_batch).to(**self.tpdv)
         env_id_batch =  check(env_id_batch).to(**self.tpdv)
         actions_batch =  check(actions_batch).to(**self.tpdv)
-        share_obs_batch =  check(share_obs_batch).to(**self.tpdv)
 
         # 使用当前策略网络评估动作
         values, action_log_probs, dist_entropy = self.policy.evaluate_actions(
-                                                        obs_batch,
-                                                        node_obs_batch,
-                                                        adj_batch,
-                                                        agent_id_batch,
-                                                        env_id_batch,
-                                                        actions_batch,
-                                                        share_obs_batch,
+                                                        obs_batch, # (M*N, D_obs)
+                                                        node_obs_batch, #(M, N, D_obs)
+                                                        adj_batch, # (M, N, N)
+                                                        agent_id_batch, # (M*N)
+                                                        env_id_batch, # (M*N)
+                                                        actions_batch
                                                         )
         # 重要性采样权重
         imp_weights = torch.exp(action_log_probs - action_log_probs_batch)
@@ -207,11 +210,12 @@ class GR_MAPPO():
         train_infos['imp_weights'] = 0       # 新策略选择动作 a_t 的概率与旧策略选择同样动作的概率之比, 在 1.0 附近波动
 
         for _ in range(self.ppo_epoch):
-            # 将整个 Buffer 的数据分割成 self.num_mini_batch 个小批次
-            data_generator = buffer.feed_forward_generator(advantages_flat_for_generator, self.num_mini_batch)
+            # 将整个 Buffer 的数据分割成小批次
+            data_generator = buffer.feed_forward_generator(advantages_flat_for_generator, self.mini_batch_size)
             for sample in data_generator:
                 value_loss, critic_grad_norm, policy_loss, dist_entropy, \
-                actor_grad_norm, imp_weights = self.ppo_update(sample) # 用这批样本做一次网络更新
+                actor_grad_norm, imp_weights = self._ppo_update(sample) # 用这批样本做一次网络更新
+                
                 
                 train_infos['value_loss'] += value_loss.item()
                 train_infos['policy_loss'] += policy_loss.item()
