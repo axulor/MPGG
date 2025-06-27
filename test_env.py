@@ -4,10 +4,10 @@ import random
 from itertools import combinations
 
 def plot_agent_connections(num_agents: int, 
-                           world_size: float, 
-                           radius: float, 
-                           dot_size: int = 50, 
-                           seed: int = None):
+                            world_size: float, 
+                            radius: float, 
+                            dot_size: int = 50, 
+                            seed: int = None):
     """
     绘制两个快照，并正确处理周期性边界的连线：
     1. 普通邻接图：智能体之间距离在 radius 内则连线。

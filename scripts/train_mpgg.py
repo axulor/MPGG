@@ -46,8 +46,8 @@ all_args = SimpleNamespace(
     num_env_steps=5000000,          
 
     # --- 环境特定参数 ---
-    num_agents=25,
-    world_size=10,
+    num_agents=100,
+    world_size=20,
     speed=0.05,
     radius=2.0,
     cost=1.0, 
