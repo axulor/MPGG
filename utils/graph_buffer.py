@@ -72,27 +72,18 @@ class GraphReplayBuffer(object):
         self.values[self.episode_length] = next_value.copy() # 存储末位的价值估计
         
         gae = 0.0
-        for step_idx in reversed(range(self.episode_length)): # step_idx from L-1 down to 0
-            v_s_t_old = self.values[step_idx]
-            v_s_t_plus_1_old = self.values[step_idx + 1]
+        for step in reversed(range(self.episode_length)): # step_idx from L-1 down to 0
 
-            if self.use_popart or self.use_valuenorm:
-                # delta = r_t + gamma * V_denorm(s_{t+1})  - V_denorm(s_t)
-                delta = (
-                    self.rewards[step_idx]
-                    + self.gamma * value_normalizer.denormalize(v_s_t_plus_1_old) 
-                    - value_normalizer.denormalize(v_s_t_old)
-                )
-                gae = delta + self.gamma * self.gae_lambda  * gae
-                self.returns[step_idx] = gae + value_normalizer.denormalize(v_s_t_old)
-            else:
-                delta = (
-                    self.rewards[step_idx]
-                    + self.gamma * v_s_t_plus_1_old 
-                    - v_s_t_old
-                )
-                gae = delta + self.gamma * self.gae_lambda  * gae
-                self.returns[step_idx] = gae + v_s_t_old
+            if self.use_valuenorm and value_normalizer is not None:
+                v_s_t_plus_1 = value_normalizer.denormalize(self.values[step + 1])
+                v_s_t = value_normalizer.denormalize(self.values[step])
+            else: # for PopArt or no normalization
+                v_s_t_plus_1 = self.values[step + 1]
+                v_s_t = self.values[step]
+
+            delta = self.rewards[step] + self.gamma * v_s_t_plus_1 * (1 - self.dones[step + 1]) - v_s_t
+            gae = delta + self.gamma * self.gae_lambda * (1 - self.dones[step + 1]) * gae
+            self.returns[step] = gae + v_s_t
 
     def feed_forward_generator(self, advantages, mini_batch_size):
 

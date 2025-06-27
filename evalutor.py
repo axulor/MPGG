@@ -81,7 +81,7 @@ MARL_MODEL_ARGS = argparse.Namespace(
     num_GNN_layers=2,       # 对应 gnn_layer_N，GNNBase内部可能使用这个名字
 
     # === Critic 特定 ===
-    use_cent_obs=True,
+    # use_cent_obs=True,
 
     # === GR_MAPPOPolicy 或 GR_Actor/Critic 构造函数可能需要的其他参数 ===
     lr=1e-4,

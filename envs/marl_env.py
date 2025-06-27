@@ -226,6 +226,21 @@ class MultiAgentGraphEnv(gym.Env):
                 
         return payoffs
 
+    # # marl_env.py -> _compute_payoffs (临时修改用于诊断)
+    # def _compute_payoffs(self) -> np.ndarray:
+    #     N = self.num_agents
+    #     payoffs = np.zeros(N, dtype=np.float32)
+    #     adj = self.dist_adj
+        
+    #     # 简化任务：每个智能体的奖励等于它的邻居数量
+    #     # 这个奖励是密集的、即时的、无欺骗性的
+    #     for i in range(N):
+    #         # 邻居数量（不包括自己）
+    #         num_neighbors = np.sum((adj[i] > 0) & (adj[i] <= self.radius))
+    #         payoffs[i] = float(num_neighbors)
+            
+    #     return payoffs
+
 
     def _record_payoffs(self, payoffs: np.ndarray) -> None:
         """ 更新 agent.current_payoff """

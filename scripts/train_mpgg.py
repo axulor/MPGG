@@ -37,51 +37,48 @@ from utils.util import print_box, print_args # 打印工具
 # 使用 SimpleNamespace 创建配置对象 all_args，包含所有必需的参数。
 all_args = SimpleNamespace(
     # --- 实验标识与基本设置 ---
-    user_name="local_optimized",      # MODIFICATION: Changed user_name for new runs
+    user_name="local_optimized",      
     seed=1,
     cuda=True,
     cuda_deterministic=False,
     n_training_threads=8,
     n_rollout_threads=8,            # 并行环境数 
-    num_env_steps=500000,          # MODIFICATION: Increased total steps for more learning
+    num_env_steps=5000000,          
 
     # --- 环境特定参数 ---
-    num_agents=10,
-    world_size=8,
+    num_agents=25,
+    world_size=10,
     speed=0.05,
     radius=2.0,
     cost=1.0, 
     r=5.0,
     beta=1.0,
-    episode_length=128,             # 原来是 64. 尝试 256, 512, 或 1024.
-                                    # 需要确保内存足够存储 (L+1)*N_threads*N_agents*obs_dim 等
+    episode_length=100,                                             
     env_max_steps = 2000,           # 环境内部逻辑回合最大步数
 
 
     # === 网络结构与特性 ===
     share_policy=True,
-    # MODIFICATION: Increased hidden_size
-    hidden_size=64,                # 原来是 32. 尝试 64, 128.
-    layer_N=2,                      # MODIFICATION: MLP层数可以尝试增加到2
+    hidden_size=64,                
+    layer_N=2,                     
     use_ReLU=True,
     use_orthogonal=True,
     gain=0.01,
     use_feature_normalization=True,
-    # MODIFICATION: Temporarily disable PopArt/ValueNorm for debugging stability
-    use_popart=False,               # 原来是 True.
-    use_valuenorm=True,            # 保持 False.
+    use_popart=True,               
+    use_valuenorm=False,           
     split_batch=True,
     max_batch_size=1024,
 
     # === GNN 相关参数 ===
     use_gnn_policy=True,
-    gnn_hidden_size=64,            # 原来是 64. 尝试 128.
+    gnn_hidden_size=64,           
     gnn_num_heads=4,                # gnn 多头注意力机制的头数
     gnn_concat_heads=True,
     gnn_layer_N=2,
     gnn_use_ReLU=True,
-    embed_hidden_size=64,          # 原来是 64. 尝试 128.
-    embed_layer_N=1,                # 可以尝试增加到 2
+    embed_hidden_size=64,          
+    embed_layer_N=1,                
     embed_use_ReLU=True,
     embed_add_self_loop=True,
     max_edge_dist=2.0,
@@ -89,19 +86,18 @@ all_args = SimpleNamespace(
     actor_graph_aggr="node",
     critic_graph_aggr="global",
     global_aggr_type="mean",
-    use_cent_obs=True,
 
 
     # === PPO 算法参数 ===
-    ppo_epoch=2,                   # PPO 更新时数据重复利用次数
+    ppo_epoch=4,                   # PPO 更新时数据重复利用次数
     mini_batch_size = 800,
-    entropy_coef=0.01,              # 原来是 0.05. 尝试 0.01, 0.005.
+    entropy_coef=0.01,              
     value_loss_coef=1.0,
-    lr=1e-4,                        # 学习率可以稍后调整，先看大结构是否稳定
-    critic_lr=5e-6,                 # 同上
+    lr=1e-4,                        
+    critic_lr=1e-5,                 
     clip_param=0.2,
     opti_eps=1e-5,
-    max_grad_norm=10.0,
+    max_grad_norm=5.0,
     use_max_grad_norm=True,
     use_clipped_value_loss=True,
     use_gae=True,
@@ -112,14 +108,14 @@ all_args = SimpleNamespace(
     weight_decay=0,
 
     # === 保存与日志 ===
-    save_interval=20,               # MODIFICATION: Increased save interval as episodes are longer
-    log_interval=5,                 # MODIFICATION: Increased log interval
-    global_reset_interval = 10,
+    save_interval=50,               
+    log_interval=1,                
+    global_reset_interval = 2,
 
     # === 评估参数 ===
     use_eval=True,
     n_eval_rollout_threads=8,       # 评估并行环境数 (可以与训练并行数不同)
-    eval_interval=1,              # MODIFICATION: Increased eval interval
+    eval_interval=500,              
     eval_rounds = 80,
     eval_steps_per_round = 500,     # 评估时每轮的步数
 
