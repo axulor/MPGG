@@ -135,10 +135,10 @@ class GMPERunner:
                 reset_count = 0 # 重置计数器
                 print(f"  (Runner) 所有环境已重置并 Warmup 完成。")
 
-            if episode == 0:
-                print(f"  执行初始评估...")
-                self.fast_eval(episode)
-                print("  (Runner) 评估完成.")
+            # if episode == 0:
+            #     print(f"  执行初始评估...")
+            #     self.fast_eval(episode)
+            #     print("  (Runner) 评估完成.")
 
             segment_coop_rates = np.full((self.episode_length, self.n_rollout_threads), np.nan, dtype=np.float32) # 存储合作率数据
             segment_avg_rewards = np.full((self.episode_length, self.n_rollout_threads), np.nan, dtype=np.float32) # 存储奖励数据
@@ -233,7 +233,7 @@ class GMPERunner:
             # 保存模型
             if (episode + 1) % self.save_interval == 0 or episode == episodes - 1:
                 print(f"  (Runner) 回合 {episode + 1}/{episodes}: 保存模型...")
-                self.save()
+                self.save(episode)
                 print("  (Runner) 模型已保存.")
 
             # 保存日志
@@ -344,21 +344,63 @@ class GMPERunner:
             print("评估未产生数据。")
         print(f"--- 评估结束 (在网络更新次数为 {episode} 时) ---")
 
-    def save(self):
-        """保存策略的 Actor 和 Critic 网络参数 """
-        # 检查保存目录是否存在
+    # def save(self):
+    #     """保存策略的 Actor 和 Critic 网络参数 """
+    #     # 检查保存目录是否存在
+    #     if not os.path.exists(self.save_dir):
+    #         os.makedirs(self.save_dir)
+    #         print(f"  创建模型保存目录: {self.save_dir}")
+
+    #     actor_save_path = str(self.save_dir) + "/actor.pt"
+    #     critic_save_path = str(self.save_dir) + "/critic.pt"
+    #     print(f"  保存 Actor 到: {actor_save_path}")
+    #     print(f"  保存 Critic 到: {critic_save_path}")
+    #     policy_actor = self.trainer.policy.actor
+    #     torch.save(policy_actor.state_dict(), actor_save_path)
+    #     policy_critic = self.trainer.policy.critic
+    #     torch.save(policy_critic.state_dict(), critic_save_path)
+
+
+    def save(self, episode: int):
+        """
+        保存一个包含完整训练状态的检查点。
+
+        Args:
+            episode (int): 当前的 episode 编号，用于命名文件。
+        """
+        # 确保保存目录存在
         if not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)
-            print(f"  创建模型保存目录: {self.save_dir}")
 
-        actor_save_path = str(self.save_dir) + "/actor.pt"
-        critic_save_path = str(self.save_dir) + "/critic.pt"
-        print(f"  保存 Actor 到: {actor_save_path}")
-        print(f"  保存 Critic 到: {critic_save_path}")
-        policy_actor = self.trainer.policy.actor
-        torch.save(policy_actor.state_dict(), actor_save_path)
-        policy_critic = self.trainer.policy.critic
-        torch.save(policy_critic.state_dict(), critic_save_path)
+        # 1. 创建一个包含所有可恢复状态的字典
+        # 这是实现断点续训的关键
+        checkpoint = {
+            'episode': episode,
+            'actor_state_dict': self.policy.actor.state_dict(),
+            'critic_state_dict': self.policy.critic.state_dict(),
+            'actor_optimizer_state_dict': self.policy.actor_optimizer.state_dict(),
+            'critic_optimizer_state_dict': self.policy.critic_optimizer.state_dict(),
+        }
+
+        # 如果使用了 GNN，也保存 GNN 的状态
+        if hasattr(self.policy, 'actor_gnn'):
+            checkpoint['actor_gnn_state_dict'] = self.policy.actor_gnn.state_dict()
+        if hasattr(self.policy, 'critic_gnn'):
+            checkpoint['critic_gnn_state_dict'] = self.policy.critic_gnn.state_dict()
+            
+        # 如果使用了价值归一化 (PopArt 或 ValueNorm)，保存其状态
+        if self.trainer.value_normalizer is not None and hasattr(self.trainer.value_normalizer, 'state_dict'):
+            checkpoint['value_normalizer_state_dict'] = self.trainer.value_normalizer.state_dict()
+
+        # 2. 保存一个以 episode 编号命名的、永久性的快照
+        # episode 编号从0开始，我们保存时用 ep1, ep2... 更直观
+        snapshot_path = os.path.join(self.save_dir, f"checkpoint_ep{episode + 1}.pt")
+        torch.save(checkpoint, snapshot_path)
+        print(f"  Saved training snapshot to: {snapshot_path}")
+
+        # 3. 始终覆盖一个 "latest" 检查点，用于方便地恢复训练
+        latest_path = os.path.join(self.save_dir, "checkpoint_latest.pt")
+        torch.save(checkpoint, latest_path)
 
     def restore(self):
         """从指定目录加载预训练模型参数 """
@@ -368,7 +410,7 @@ class GMPERunner:
         actor_load_path = str(self.model_dir) + "/actor.pt"
         critic_load_path = str(self.model_dir) + "/critic.pt"
 
-        if not os.path.exists(actor_load_path):
+        if not os.path.exists(actor_load_path): 
             print(f"错误：找不到 Actor 模型文件: {actor_load_path}")
             return
         print(f"  从文件加载 Actor: {actor_load_path}")

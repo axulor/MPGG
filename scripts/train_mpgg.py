@@ -43,18 +43,21 @@ all_args = SimpleNamespace(
     cuda_deterministic=False,
     n_training_threads=8,
     n_rollout_threads=8,            # 并行环境数 
-    num_env_steps=5000000,          
+    num_env_steps=500000,          
 
     # --- 环境特定参数 ---
-    num_agents=100,
-    world_size=20,
+    num_agents=25,
+    world_size=7,
     speed=0.05,
     radius=2.0,
     cost=1.0, 
     r=5.0,
-    beta=1.0,
+    beta=10,
     episode_length=100,                                             
     env_max_steps = 2000,           # 环境内部逻辑回合最大步数
+
+    egt_rounds = 10, # 博弈模拟器参数
+    egt_steps = 50,
 
 
     # === 网络结构与特性 ===
@@ -108,16 +111,16 @@ all_args = SimpleNamespace(
     weight_decay=0,
 
     # === 保存与日志 ===
-    save_interval=50,               
+    save_interval=10,               
     log_interval=1,                
-    global_reset_interval = 2,
+    global_reset_interval = 5,
 
     # === 评估参数 ===
     use_eval=True,
     n_eval_rollout_threads=8,       # 评估并行环境数 (可以与训练并行数不同)
-    eval_interval=500,              
+    eval_interval=50,              
     eval_rounds = 80,
-    eval_steps_per_round = 500,     # 评估时每轮的步数
+    eval_steps_per_round = 800,     # 评估时每轮的步数
 
     # === 是否加载预训练模型 ===
     model_dir = None, 

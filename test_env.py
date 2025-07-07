@@ -218,7 +218,7 @@ def plot_shortest_path_line_simplified(ax, p1_coords, p2_coords, world_size, rad
 
 if __name__ == '__main__':
     NUM_AGENTS = 25
-    WORLD_SIZE = 10.0
+    WORLD_SIZE = 7.0
     RADIUS = 2.0
     DOT_SIZE = 70
     RANDOM_SEED = 42

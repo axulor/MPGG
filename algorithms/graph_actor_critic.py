@@ -160,14 +160,17 @@ class GR_Critic(nn.Module):
         device=torch.device("cpu"),
     ) -> None:
         
+        # print("\n[DEBUG] Entering GR_Critic.__init__...")
         super(GR_Critic, self).__init__()
 
         self.args = args
         self.hidden_size = args.hidden_size # 输出层可能用到
         self.use_orthogonal = args.use_orthogonal # 用于输出层初始化
         self.use_popart = args.use_popart # PopArt 的使用与否
+        # print(f"[DEBUG]  use_popart flag received: {self.use_popart}")
         self.tpdv = dict(dtype=torch.float32, device=device)
         
+        # print("[DEBUG]  Creating node_obs_processor and base MLP...")
         _, node_feat_dim = get_shape_from_obs_space(node_obs_space)
         self.processor_dim = self.hidden_size // 2 # 输出定为隐藏层的一半
         self.node_obs_processor = nn.Sequential(
@@ -177,18 +180,47 @@ class GR_Critic(nn.Module):
 
         # MLPBase 
         self.base = MLPBase(args, input_dim = critic_mlp_input_dim)
+        # print(f"[DEBUG]  Keys after creating base modules: {list(self.state_dict().keys())}")
+
 
         # 输出层 (v_out)
+        # print("[DEBUG]  Preparing to create and assign v_out module...")
         init_method = [nn.init.xavier_uniform_, nn.init.orthogonal_][self.use_orthogonal]  # 初始化方法选择
         def init_linear_or_popart(m_layer): # 辅助函数简化初始化
             return init(m_layer, init_method, lambda x: nn.init.constant_(x, 0))
 
         if self.use_popart: # PopArt input dim is hidden_size, output is 1
+            # print("[DEBUG]  `use_popart` is True. Creating PopArt instance...")
             self.v_out = init_linear_or_popart(PopArt(self.hidden_size, 1, device=device))
+            # print(f"[DEBUG]  Assigned PopArt instance to self.v_out. Type of self.v_out: {type(self.v_out)}")
         else:
+            # print("[DEBUG]  `use_popart` is False. Creating Linear instance...")
             self.v_out = init_linear_or_popart(nn.Linear(self.hidden_size, 1))
+            # print(f"[DEBUG]  Assigned Linear instance to self.v_out. Type of self.v_out: {type(self.v_out)}")
+
+        # if self.use_popart:
+        #     v_out_module = PopArt(self.hidden_size, 1, device=device)
+        #     # 强制将这个模块注册为名为 'v_out' 的子模块
+        #     self.add_module('v_out', v_out_module)
+        # else:
+        #     v_out_module = init_linear_or_popart(nn.Linear(self.hidden_size, 1))
+        #     self.add_module('v_out', v_out_module)
+
+        # # --- Stage 4: THE MOST CRITICAL CHECK ---
+        # print("[DEBUG]  Checking state_dict keys IMMEDIATELY after assigning self.v_out...")
+        # keys_after_assignment = list(self.state_dict().keys())
+        # print(f"[DEBUG]  Keys now: {keys_after_assignment}")
+        
+        # if any("v_out" in key for key in keys_after_assignment):
+        #     print("[DEBUG]  SUCCESS: 'v_out' keys are present in state_dict!")
+        # else:
+        #     print("[DEBUG]  FAILURE: 'v_out' keys are STILL MISSING from state_dict!")
+        #     # Let's check the raw _modules dictionary
+        #     print(f"[DEBUG]  Raw self._modules dictionary: {self._modules.keys()}")
 
         self.to(device)
+
+        # print("[DEBUG] Exiting GR_Critic.__init__.")
 
     def forward(self, 
                 node_obs: Tensor,          # 中心化/个体观测, 形状 (M, N, D_obs)

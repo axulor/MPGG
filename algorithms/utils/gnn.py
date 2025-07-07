@@ -255,6 +255,7 @@ class GNNBase(nn.Module):
                 node_obs_dim: int,  # 单个节点特征的维度, MPGG 中为 6
                 edge_dim: int,      # 边的特征维度, MPGG 中为7
                 graph_aggr: str,    # 聚合方式, "node" 或 "global"
+                use_mini_node_feat: bool = False,
                 device=torch.device("cpu")
                 ):
         super(GNNBase, self).__init__()
@@ -262,6 +263,7 @@ class GNNBase(nn.Module):
         self.args = args
         self.graph_aggr = graph_aggr
         self.edge_dim = edge_dim 
+        self.use_mini_node_feat = use_mini_node_feat
 
         # 实例化核心的 GNN 网络 (TransformerConvNet)
         self.gnn_core = TransformerConvNet( # 重命名为 gnn_core 以示区分
@@ -397,21 +399,30 @@ class GNNBase(nn.Module):
     def forward(self, 
                 node_obs: Tensor, # 形状: (M, N, node_feat_dim)
                 adj: Tensor,       # 形状: (M, N, N)
-                full_node_obs_for_edge: Optional[Tensor] = None
+                # full_node_obs_for_edge: Optional[Tensor] = None
             ) -> Tensor:
         M, N, _ = node_obs.shape
 
-        # [MODIFIED] Call the new instance method to process graph data
-        edge_creation_obs = full_node_obs_for_edge if full_node_obs_for_edge is not None else node_obs
-        edge_index, edge_attr = self._process_graph_data(edge_creation_obs, adj)
+        if self.use_mini_node_feat:
+            # For Actor's GNN: slice out the strategy feature (index 4)
+            gnn_node_input = node_obs[..., 4:5]
+        else:
+            # For Critic's GNN: use the full features
+            gnn_node_input = node_obs
         
-        x_nodes = node_obs.reshape(-1, node_obs.shape[-1])
+        edge_index, edge_attr = self._process_graph_data(node_obs, adj)
+
+        # # [MODIFIED] Call the new instance method to process graph data
+        # edge_creation_obs = full_node_obs_for_edge if full_node_obs_for_edge is not None else node_obs
+        # edge_index, edge_attr = self._process_graph_data(edge_creation_obs, adj)
+        
+        x_nodes = gnn_node_input.reshape(-1, gnn_node_input.shape[-1])
         batch_index = torch.arange(M, device=x_nodes.device).repeat_interleave(N)
         
-        pyg_batch_data = Data(x=x_nodes, 
-                            edge_index=edge_index, 
-                            edge_attr=edge_attr,
-                            batch=batch_index)
+        pyg_batch_data = Data(x = x_nodes, 
+                            edge_index = edge_index, 
+                            edge_attr = edge_attr,
+                            batch = batch_index)
 
         gnn_output = self.gnn_core(pyg_batch_data) 
 
