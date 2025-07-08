@@ -12,3 +12,6 @@ runs/
 pics/
 results/
 .vscode/
+analyze/
+analysis_outputs/
+

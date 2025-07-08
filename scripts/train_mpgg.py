@@ -58,6 +58,7 @@ all_args = SimpleNamespace(
 
     egt_rounds = 10, # 博弈模拟器参数
     egt_steps = 50,
+    k_neighbors = 4,
 
 
     # === 网络结构与特性 ===

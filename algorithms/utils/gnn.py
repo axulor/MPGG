@@ -264,6 +264,7 @@ class GNNBase(nn.Module):
         self.graph_aggr = graph_aggr
         self.edge_dim = edge_dim 
         self.use_mini_node_feat = use_mini_node_feat
+        self.k_neighbors = args.k_neighbors
 
         # 实例化核心的 GNN 网络 (TransformerConvNet)
         self.gnn_core = TransformerConvNet( # 重命名为 gnn_core 以示区分
@@ -298,56 +299,103 @@ class GNNBase(nn.Module):
         self.to(device)
 
     def _process_graph_data(self, node_obs: Tensor, adj: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        Processes batch of node features and adjacency matrices
-        to create pyg-compatible edge_index and a rich edge_attr.
-        """
-        M, N, D_obs = node_obs.shape
-        
-        # 1. Find all existing edges from the adjacency matrix
-        connect_mask = ((adj > 0) & (adj <= self.args.max_edge_dist))
-        b, dst, src = connect_mask.nonzero(as_tuple=True)
-        # b: batch_idx, dst: destination_idx (row), src: source_idx (col)
-        # Note: PyG convention is (source, destination)
-        
+        M, N, _ = node_obs.shape
+        device = node_obs.device
+
+        if self.k_neighbors <= 0:
+            return self._process_graph_data_original(node_obs, adj)
+
+        distances = adj.clone()
+        mask = (adj == 0) | (adj > self.args.radius)
+        distances[mask] = float('inf')
+
+        top_k_dists, top_k_indices = torch.topk(distances, k=self.k_neighbors, dim=-1, largest=False)
+
+        valid_edge_mask = (top_k_dists != float('inf'))
+
+        src_local_indices = torch.arange(N, device=device).view(1, N, 1).expand(M, N, self.k_neighbors)
+
+        batch_indices = torch.arange(M, device=device).view(M, 1, 1).expand(M, N, self.k_neighbors)
+
+        b = batch_indices[valid_edge_mask]
+        src_local = src_local_indices[valid_edge_mask]
+        dst_local = top_k_indices[valid_edge_mask]
+
         if b.numel() == 0:
-            return torch.empty((2, 0), dtype=torch.long, device=node_obs.device), \
-                torch.empty((0, self.edge_dim), dtype=torch.float32, device=node_obs.device)
-        
-        # 2. Build edge_index in pyg format (source_to_destination)
-        batch_offset = b * N
-        src_global = batch_offset + src
-        dst_global = batch_offset + dst
+            return torch.empty((2, 0), dtype=torch.long, device=device), \
+                torch.empty((0, self.edge_dim), dtype=torch.float32, device=device)
+
+        offset = b * N
+        src_global = src_local + offset
+        dst_global = dst_local + offset
         edge_index = torch.stack([src_global, dst_global], dim=0)
 
-        # 3. Build the rich edge_attr tensor (NEW)
-        
-        # a. Relative position (source -> destination)
-        # pos is in obs[..., 0:2]. We normalize by world_size.
         positions = node_obs[..., 0:2] * self.args.world_size
-        # Get positions of all source and destination nodes of the edges
-        rel_pos = (positions[b, dst] - positions[b, src]) / self.args.radius
+        rel_pos = (positions[b, dst_local] - positions[b, src_local]) / self.args.radius
 
-        # b. Strategy interaction type (one-hot encoded)
-        # strategy is in obs[..., 4]
-        strategies = node_obs[..., 4].long() # Shape (M, N)
-        src_str, dst_str = strategies[b, src], strategies[b, dst]
-        # Interaction type: C->C=3, C->D=2, D->C=1, D->D=0
-        interaction_type = src_str * 2 + dst_str 
-        strat_one_hot = torch.nn.functional.one_hot(interaction_type, num_classes=4).float() # (Num_Edges, 4)
+        strategies = node_obs[..., 4].long()
+        src_str, dst_str = strategies[b, src_local], strategies[b, dst_local]
+        interaction_type = src_str * 2 + dst_str
+        strat_one_hot = torch.nn.functional.one_hot(interaction_type, num_classes=4).float()
 
-        # c. Distance (scalar)
-        distance = adj[b, dst, src].unsqueeze(-1) # (Num_Edges, 1)
+        distance = adj[b, src_local, dst_local].unsqueeze(-1)
         distance_normalized = distance / self.args.radius
 
-        # d. Concatenate all edge features
-        edge_attr = torch.cat([rel_pos, strat_one_hot, distance_normalized], dim=-1) # (Num_Edges, 2+4+1=7)
+        edge_attr = torch.cat([rel_pos, strat_one_hot, distance_normalized], dim=-1)
         
-        # Check if the final dimension matches self.edge_dim
-        if edge_attr.shape[1] != self.edge_dim:
-            raise ValueError(f"Constructed edge_attr dim {edge_attr.shape[1]} does not match expected edge_dim {self.edge_dim}")
-
         return edge_index, edge_attr
+
+    # def _process_graph_data(self, node_obs: Tensor, adj: Tensor) -> Tuple[Tensor, Tensor]:
+    #     """
+    #     Processes batch of node features and adjacency matrices
+    #     to create pyg-compatible edge_index and a rich edge_attr.
+    #     """
+    #     M, N, D_obs = node_obs.shape
+        
+    #     # 1. Find all existing edges from the adjacency matrix
+    #     connect_mask = ((adj > 0) & (adj <= self.args.max_edge_dist))
+    #     b, dst, src = connect_mask.nonzero(as_tuple=True)
+    #     # b: batch_idx, dst: destination_idx (row), src: source_idx (col)
+    #     # Note: PyG convention is (source, destination)
+        
+    #     if b.numel() == 0:
+    #         return torch.empty((2, 0), dtype=torch.long, device=node_obs.device), \
+    #             torch.empty((0, self.edge_dim), dtype=torch.float32, device=node_obs.device)
+        
+    #     # 2. Build edge_index in pyg format (source_to_destination)
+    #     batch_offset = b * N
+    #     src_global = batch_offset + src
+    #     dst_global = batch_offset + dst
+    #     edge_index = torch.stack([src_global, dst_global], dim=0)
+
+    #     # 3. Build the rich edge_attr tensor (NEW)
+        
+    #     # a. Relative position (source -> destination)
+    #     # pos is in obs[..., 0:2]. We normalize by world_size.
+    #     positions = node_obs[..., 0:2] * self.args.world_size
+    #     # Get positions of all source and destination nodes of the edges
+    #     rel_pos = (positions[b, dst] - positions[b, src]) / self.args.radius
+
+    #     # b. Strategy interaction type (one-hot encoded)
+    #     # strategy is in obs[..., 4]
+    #     strategies = node_obs[..., 4].long() # Shape (M, N)
+    #     src_str, dst_str = strategies[b, src], strategies[b, dst]
+    #     # Interaction type: C->C=3, C->D=2, D->C=1, D->D=0
+    #     interaction_type = src_str * 2 + dst_str 
+    #     strat_one_hot = torch.nn.functional.one_hot(interaction_type, num_classes=4).float() # (Num_Edges, 4)
+
+    #     # c. Distance (scalar)
+    #     distance = adj[b, dst, src].unsqueeze(-1) # (Num_Edges, 1)
+    #     distance_normalized = distance / self.args.radius
+
+    #     # d. Concatenate all edge features
+    #     edge_attr = torch.cat([rel_pos, strat_one_hot, distance_normalized], dim=-1) # (Num_Edges, 2+4+1=7)
+        
+    #     # Check if the final dimension matches self.edge_dim
+    #     if edge_attr.shape[1] != self.edge_dim:
+    #         raise ValueError(f"Constructed edge_attr dim {edge_attr.shape[1]} does not match expected edge_dim {self.edge_dim}")
+
+    #     return edge_index, edge_attr
 
 
     # def forward(self, 

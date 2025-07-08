@@ -38,7 +38,7 @@ def get_config_for_analysis():
 
             # --- 环境特定参数 ---
             num_agents=25,
-            world_size=10,
+            world_size=7,
             speed=0.05,
             radius=2.0,
             cost=1.0, 
@@ -49,6 +49,7 @@ def get_config_for_analysis():
 
             egt_rounds = 10, # 博弈模拟器参数
             egt_steps = 50,
+            k_neighbors = 4,
 
 
             # === 网络结构与特性 ===
@@ -284,8 +285,8 @@ def main():
     """
     # --- 1. 定义分析配置 ---
     # [USER ACTION REQUIRED]: 修改为你自己的实验运行文件夹名和模型文件名
-    experiment_name = "local_optimized_N25_L100_H64_GNNH64_Ent0.01/run38" 
-    model_filename = "checkpoint_ep600.pt" # 推荐使用 best_model.pt
+    experiment_name = "local_optimized_N25_L100_H64_GNNH64_Ent0.01/run40" 
+    model_filename = "checkpoint_ep500.pt" # 推荐使用 best_model.pt
 
     # 定义模拟参数
     num_rounds = 10 # 8个并行环境跑10轮，总共80次模拟
