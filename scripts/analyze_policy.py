@@ -27,98 +27,95 @@ def get_config_for_analysis():
     这是保证模型结构一致性的关键。
     """
     args = SimpleNamespace(
-            # --- 实验标识与基本设置 ---
-            user_name="local_optimized",      
-            seed=1,
-            cuda=True,
-            cuda_deterministic=False,
-            n_training_threads=8,
-            n_rollout_threads=8,            # 并行环境数 
-            num_env_steps=200000,          
+        # --- 实验标识与基本设置 ---
+        user_name="local_optimized",      
+        seed=1,
+        cuda=True,
+        cuda_deterministic=False,
+        n_training_threads=8,
+        n_rollout_threads=8,            # 并行环境数 
+        num_env_steps=10000000,          
 
-            # --- 环境特定参数 ---
-            num_agents=25,
-            world_size=7,
-            speed=0.05,
-            radius=2.0,
-            cost=1.0, 
-            r=5.0,
-            beta=1.0,
-            episode_length=100,                                             
-            env_max_steps = 2000,           # 环境内部逻辑回合最大步数
+        # --- 环境特定参数 ---
+        num_agents=100,
+        world_size=15,
+        speed=0.05,
+        radius=2.0,
+        cost=1.0, 
+        r=4.0,
+        beta=10,
+        episode_length=1000,                                             
 
-            egt_rounds = 10, # 博弈模拟器参数
-            egt_steps = 50,
-            k_neighbors = 4,
-
-
-            # === 网络结构与特性 ===
-            share_policy=True,
-            hidden_size=64,                
-            layer_N=2,                     
-            use_ReLU=True,
-            use_orthogonal=True,
-            gain=0.01,
-            use_feature_normalization=True,
-            use_popart=True,               
-            use_valuenorm=False,           
-            split_batch=True,
-            max_batch_size=1024,
-
-            
-
-            # === GNN 相关参数 ===
-            use_gnn_policy=True,
-            gnn_hidden_size=64,           
-            gnn_num_heads=4,                # gnn 多头注意力机制的头数
-            gnn_concat_heads=True,
-            gnn_layer_N=2,
-            gnn_use_ReLU=True,
-            embed_hidden_size=64,          
-            embed_layer_N=1,                
-            embed_use_ReLU=True,
-            embed_add_self_loop=True,
-            max_edge_dist=2.0,
-            graph_feat_type="relative",
-            actor_graph_aggr="node",
-            critic_graph_aggr="global",
-            global_aggr_type="mean",
+        egt_rounds = 20, # 博弈模拟器参数
+        egt_steps = 100,
+        k_neighbors = 4,
 
 
-            # === PPO 算法参数 ===
-            ppo_epoch=4,                   # PPO 更新时数据重复利用次数
-            mini_batch_size = 800,
-            entropy_coef=0.01,              
-            value_loss_coef=1.0,
-            lr=1e-4,                        
-            critic_lr=1e-5,                 
-            clip_param=0.2,
-            opti_eps=1e-5,
-            max_grad_norm=5.0,
-            use_max_grad_norm=True,
-            use_clipped_value_loss=True,
-            use_gae=True,
-            gamma=0.99,
-            gae_lambda=0.95,
-            use_huber_loss=False,
-            huber_delta=10.0,
-            weight_decay=0,
+        # === 网络结构与特性 ===
+        share_policy=True,
+        hidden_size=64,                
+        layer_N=2,                     
+        use_ReLU=True,
+        use_orthogonal=True,
+        gain=0.01,
+        use_feature_normalization=True,
+        use_popart=True,               
+        use_valuenorm=False,           
+        split_batch=True,
+        max_batch_size=1024,
 
-            # === 保存与日志 ===
-            save_interval=10,               
-            log_interval=1,                
-            global_reset_interval = 5,
+        # === GNN 相关参数 ===
+        use_gnn_policy=True,
+        gnn_hidden_size=64,           
+        gnn_num_heads=4,                # gnn 多头注意力机制的头数
+        gnn_concat_heads=True,
+        gnn_layer_N=2,
+        gnn_use_ReLU=True,
+        embed_hidden_size=64,          
+        embed_layer_N=1,                
+        embed_use_ReLU=True,
+        embed_add_self_loop=True,
+        max_edge_dist=2.0,
+        graph_feat_type="relative",
+        actor_graph_aggr="node",
+        critic_graph_aggr="global",
+        global_aggr_type="mean",
 
-            # === 评估参数 ===
-            use_eval=True,
-            n_eval_rollout_threads=8,       # 评估并行环境数 (可以与训练并行数不同)
-            eval_interval=10,              
-            eval_rounds = 80,
-            eval_steps_per_round = 800,     # 评估时每轮的步数
 
-            # === 是否加载预训练模型 ===
-            model_dir = None, 
-        )
+        # === PPO 算法参数 ===
+        ppo_epoch=2,                   # PPO 更新时数据重复利用次数
+        mini_batch_size = 2000,
+        entropy_coef=0.01,              
+        value_loss_coef=1.0,
+        lr=1e-4,                        
+        critic_lr=1e-5,                 
+        clip_param=0.2,
+        opti_eps=1e-5,
+        max_grad_norm=5.0,
+        use_max_grad_norm=True,
+        use_clipped_value_loss=True,
+        use_gae=True,
+        gamma=0.99,
+        gae_lambda=0.95,
+        use_huber_loss=False,
+        huber_delta=10.0,
+        weight_decay=0,
+
+        # === 保存与日志 ===
+        save_interval=5,               
+        log_interval=1,                
+        global_reset_interval = 2,
+
+        # === 评估参数 ===
+        use_eval=True,
+        n_eval_rollout_threads=8,       # 评估并行环境数 (可以与训练并行数不同)
+        eval_interval=40,              
+        eval_rounds = 80,
+        eval_steps_per_round = 800,     # 评估时每轮的步数
+
+        # === 是否加载预训练模型 ===
+        model_dir = None, 
+    )
     return args
 
 class PolicyAnalyzer:
@@ -285,8 +282,8 @@ def main():
     """
     # --- 1. 定义分析配置 ---
     # [USER ACTION REQUIRED]: 修改为你自己的实验运行文件夹名和模型文件名
-    experiment_name = "local_optimized_N25_L100_H64_GNNH64_Ent0.01/run40" 
-    model_filename = "checkpoint_ep500.pt" # 推荐使用 best_model.pt
+    experiment_name = "local_optimized_N100_L800_H64_GNNH64_Ent0.01/run2" 
+    model_filename = "checkpoint_ep1300.pt" # 推荐使用 best_model.pt
 
     # 定义模拟参数
     num_rounds = 10 # 8个并行环境跑10轮，总共80次模拟

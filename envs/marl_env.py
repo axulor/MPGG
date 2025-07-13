@@ -37,7 +37,6 @@ class MultiAgentGraphEnv(gym.Env):
         self.cost = args.cost
         self.r = args.r
         self.beta = args.beta
-        self.env_max_steps = args.env_max_steps           # 环境最大步数限制
 
         self.seed_val = args.seed 
         self.seed(args.seed)
@@ -399,7 +398,7 @@ class MultiAgentGraphEnv(gym.Env):
         current_avg_reward = current_total_reward / self.num_agents if self.num_agents > 0 else 0.0 # 平均奖励
 
         # 环境信息
-        done = (self.current_steps >= self.env_max_steps) # 终止信号
+        done = False # 终止信号
         info = {
                 "step_cooperation_rate": current_cooperation_rate,
                 "step_avg_reward": current_avg_reward,

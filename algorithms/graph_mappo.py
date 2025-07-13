@@ -240,13 +240,123 @@ class GR_MAPPO():
 
     #     return train_infos
 
+    # def train(self, buffer: GraphReplayBuffer):
+    #     """
+    #     PPO-updates the policy networks.
+    #     """
+    #     # 1. Calculate advantages (on CPU with numpy)
+    #     if self.use_popart: 
+    #         advantages = buffer.returns[:-1] - buffer.values[:-1]
+    #     elif self.use_valuenorm:
+    #         advantages = buffer.returns[:-1] - self.value_normalizer.denormalize(buffer.values[:-1])
+    #     else:
+    #         advantages = buffer.returns[:-1] - buffer.values[:-1]
+        
+    #     # Normalize advantages
+    #     advantages = (advantages - np.nanmean(advantages)) / (np.nanstd(advantages) + 1e-5)
+
+    #     # 2. Pre-convert all necessary data from buffer to tensors and move to device
+    #     # This is the core of the optimization.
+    #     obs_tensor = torch.from_numpy(buffer.obs[:-1]).to(self.device)
+    #     adj_tensor = torch.from_numpy(buffer.adj[:-1]).to(self.device)
+    #     actions_tensor = torch.from_numpy(buffer.actions).to(self.device)
+    #     log_probs_tensor = torch.from_numpy(buffer.action_log_probs).to(self.device)
+    #     values_tensor = torch.from_numpy(buffer.values[:-1]).to(self.device)
+    #     returns_tensor = torch.from_numpy(buffer.returns[:-1]).to(self.device)
+    #     advantages_tensor = torch.from_numpy(advantages.reshape(-1, 1)).to(self.device)
+
+    #     # 3. Initialize training info dictionary
+    #     train_infos = {
+    #         'value_loss': 0.0,
+    #         'policy_loss': 0.0,
+    #         'dist_entropy': 0.0,
+    #         'actor_grad_norm': 0.0,
+    #         'critic_grad_norm': 0.0,
+    #         'imp_weights': 0.0
+    #     }
+
+    #     # 4. Start PPO update loops
+    #     # Calculate total number of samples and minibatches
+    #     total_samples = buffer.n_rollout_threads * buffer.episode_length * buffer.num_agents
+    #     num_mini_batches = total_samples // self.mini_batch_size
+
+    #     for _ in range(self.ppo_epoch):
+    #         # Create a random permutation of indices for shuffling
+    #         rand_indices = torch.randperm(total_samples)
+
+    #         for i in range(num_mini_batches):
+    #             start = i * self.mini_batch_size
+    #             end = (i + 1) * self.mini_batch_size
+    #             minibatch_indices = rand_indices[start:end].to(self.device)
+
+    #             # --- Create a minibatch sample tuple directly from tensors ---
+    #             # This avoids creating large numpy copies in a loop.
+                
+    #             # First, get the multi-dimensional indices from the flat minibatch indices
+    #             t_indices = minibatch_indices // (buffer.n_rollout_threads * buffer.num_agents)
+    #             m_indices = (minibatch_indices // buffer.num_agents) % buffer.n_rollout_threads
+    #             n_indices = minibatch_indices % buffer.num_agents
+
+    #             # Create individual view (for Actor MLP)
+    #             obs_batch = obs_tensor[t_indices, m_indices, n_indices]
+                
+    #             # Create global view (for GNNs and Critic)
+    #             global_obs_batch = obs_tensor[t_indices, m_indices]
+    #             adj_batch = adj_tensor[t_indices, m_indices]
+
+    #             # Create IDs on the fly
+    #             agent_id_batch = n_indices.view(-1, 1)
+    #             env_id_batch = m_indices.view(-1, 1)
+
+    #             # Get other agent-specific data
+    #             actions_batch = actions_tensor[t_indices, m_indices, n_indices]
+    #             log_probs_batch = log_probs_tensor[t_indices, m_indices, n_indices]
+    #             values_batch = values_tensor[t_indices, m_indices, n_indices]
+    #             returns_batch = returns_tensor[t_indices, m_indices, n_indices]
+                
+    #             # Advantages tensor is already flat
+    #             advantages_batch = advantages_tensor[minibatch_indices]
+
+    #             sample = (obs_batch, global_obs_batch, adj_batch,
+    #                     agent_id_batch, env_id_batch, actions_batch,
+    #                     values_batch, returns_batch, log_probs_batch,
+    #                     advantages_batch)
+                
+    #             # Perform one PPO update step. 
+    #             # _ppo_update now receives a tuple of tensors already on the correct device.
+    #             value_loss, critic_grad_norm, policy_loss, dist_entropy, \
+    #             actor_grad_norm, imp_weights = self._ppo_update(sample)
+                
+    #             # Aggregate training statistics
+    #             train_infos['value_loss'] += value_loss.item()
+    #             train_infos['policy_loss'] += policy_loss.item()
+    #             train_infos['dist_entropy'] += dist_entropy.item()
+    #             train_infos['actor_grad_norm'] += actor_grad_norm
+    #             train_infos['critic_grad_norm'] += critic_grad_norm
+    #             train_infos['imp_weights'] += imp_weights.mean().item()
+
+    #     # 5. Average the training statistics
+    #     num_updates = self.ppo_epoch * num_mini_batches
+        
+    #     # Avoid division by zero if num_updates is 0
+    #     if num_updates > 0:
+    #         for k in train_infos.keys():
+    #             train_infos[k] /= num_updates
+
+    #     return train_infos
+
     def train(self, buffer: GraphReplayBuffer):
         """
         PPO-updates the policy networks.
+        [MODIFIED FOR MEMORY EFFICIENCY]
+        This version loads minibatches to the GPU one by one inside the
+        training loop, instead of loading the entire buffer at once.
         """
-        # 1. Calculate advantages (on CPU with numpy)
+        # 1. Calculate advantages (on CPU with numpy is fine)
         if self.use_popart: 
-            advantages = buffer.returns[:-1] - buffer.values[:-1]
+            # Note: If using popart, advantage calculation depends on normalized values.
+            # This implementation assumes values in buffer are already normalized if popart is used.
+            advantages = buffer.returns[:-1] - self.value_normalizer.denormalize(buffer.values[:-1])
         elif self.use_valuenorm:
             advantages = buffer.returns[:-1] - self.value_normalizer.denormalize(buffer.values[:-1])
         else:
@@ -254,76 +364,67 @@ class GR_MAPPO():
         
         # Normalize advantages
         advantages = (advantages - np.nanmean(advantages)) / (np.nanstd(advantages) + 1e-5)
-
-        # 2. Pre-convert all necessary data from buffer to tensors and move to device
-        # This is the core of the optimization.
-        obs_tensor = torch.from_numpy(buffer.obs[:-1]).to(self.device)
-        adj_tensor = torch.from_numpy(buffer.adj[:-1]).to(self.device)
-        actions_tensor = torch.from_numpy(buffer.actions).to(self.device)
-        log_probs_tensor = torch.from_numpy(buffer.action_log_probs).to(self.device)
-        values_tensor = torch.from_numpy(buffer.values[:-1]).to(self.device)
-        returns_tensor = torch.from_numpy(buffer.returns[:-1]).to(self.device)
-        advantages_tensor = torch.from_numpy(advantages.reshape(-1, 1)).to(self.device)
-
-        # 3. Initialize training info dictionary
+        
+        # 2. Initialize training info dictionary
         train_infos = {
-            'value_loss': 0.0,
-            'policy_loss': 0.0,
-            'dist_entropy': 0.0,
-            'actor_grad_norm': 0.0,
-            'critic_grad_norm': 0.0,
-            'imp_weights': 0.0
+            'value_loss': 0.0, 'policy_loss': 0.0, 'dist_entropy': 0.0,
+            'actor_grad_norm': 0.0, 'critic_grad_norm': 0.0, 'imp_weights': 0.0
         }
 
-        # 4. Start PPO update loops
+        # 3. Start PPO update loops
         # Calculate total number of samples and minibatches
         total_samples = buffer.n_rollout_threads * buffer.episode_length * buffer.num_agents
-        num_mini_batches = total_samples // self.mini_batch_size
+        
+        # Ensure mini_batch_size is not larger than total_samples
+        if self.mini_batch_size > total_samples:
+            print(f"Warning: mini_batch_size ({self.mini_batch_size}) > total_samples ({total_samples}). Setting num_mini_batches to 1.")
+            num_mini_batches = 1
+            effective_mini_batch_size = total_samples
+        else:
+            num_mini_batches = total_samples // self.mini_batch_size
+            effective_mini_batch_size = self.mini_batch_size
 
         for _ in range(self.ppo_epoch):
             # Create a random permutation of indices for shuffling
-            rand_indices = torch.randperm(total_samples)
+            rand_indices = np.random.permutation(total_samples)
 
             for i in range(num_mini_batches):
-                start = i * self.mini_batch_size
-                end = (i + 1) * self.mini_batch_size
-                minibatch_indices = rand_indices[start:end].to(self.device)
+                start = i * effective_mini_batch_size
+                end = (i + 1) * effective_mini_batch_size
+                minibatch_indices = rand_indices[start:end]
 
-                # --- Create a minibatch sample tuple directly from tensors ---
-                # This avoids creating large numpy copies in a loop.
-                
-                # First, get the multi-dimensional indices from the flat minibatch indices
+                # --- [KEY CHANGE] Create a minibatch sample tuple on CPU first ---
+                # This uses the generator logic from your buffer, which is efficient
                 t_indices = minibatch_indices // (buffer.n_rollout_threads * buffer.num_agents)
                 m_indices = (minibatch_indices // buffer.num_agents) % buffer.n_rollout_threads
                 n_indices = minibatch_indices % buffer.num_agents
 
-                # Create individual view (for Actor MLP)
-                obs_batch = obs_tensor[t_indices, m_indices, n_indices]
+                obs_batch_np = buffer.obs[t_indices, m_indices, n_indices]
+                global_obs_batch_np = buffer.obs[t_indices, m_indices]
+                adj_batch_np = buffer.adj[t_indices, m_indices]
+                agent_id_batch_np = n_indices.reshape(-1, 1)
+                env_id_batch_np = m_indices.reshape(-1, 1) # Note: this is not used in policy, but we keep it for consistency
+                actions_batch_np = buffer.actions[t_indices, m_indices, n_indices]
+                log_probs_batch_np = buffer.action_log_probs[t_indices, m_indices, n_indices]
+                values_batch_np = buffer.values[t_indices, m_indices, n_indices]
+                returns_batch_np = buffer.returns[t_indices, m_indices, n_indices]
+                advantages_batch_np = advantages.reshape(-1, 1)[minibatch_indices]
                 
-                # Create global view (for GNNs and Critic)
-                global_obs_batch = obs_tensor[t_indices, m_indices]
-                adj_batch = adj_tensor[t_indices, m_indices]
+                # --- [KEY CHANGE] Now, move only this minibatch to the GPU ---
+                sample = (
+                    torch.from_numpy(obs_batch_np).to(self.device),
+                    torch.from_numpy(global_obs_batch_np).to(self.device),
+                    torch.from_numpy(adj_batch_np).to(self.device),
+                    torch.from_numpy(agent_id_batch_np).to(self.device),
+                    torch.from_numpy(env_id_batch_np).to(self.device),
+                    torch.from_numpy(actions_batch_np).to(self.device),
+                    torch.from_numpy(values_batch_np).to(self.device),
+                    torch.from_numpy(returns_batch_np).to(self.device),
+                    torch.from_numpy(log_probs_batch_np).to(self.device),
+                    torch.from_numpy(advantages_batch_np).to(self.device)
+                )
 
-                # Create IDs on the fly
-                agent_id_batch = n_indices.view(-1, 1)
-                env_id_batch = m_indices.view(-1, 1)
-
-                # Get other agent-specific data
-                actions_batch = actions_tensor[t_indices, m_indices, n_indices]
-                log_probs_batch = log_probs_tensor[t_indices, m_indices, n_indices]
-                values_batch = values_tensor[t_indices, m_indices, n_indices]
-                returns_batch = returns_tensor[t_indices, m_indices, n_indices]
-                
-                # Advantages tensor is already flat
-                advantages_batch = advantages_tensor[minibatch_indices]
-
-                sample = (obs_batch, global_obs_batch, adj_batch,
-                        agent_id_batch, env_id_batch, actions_batch,
-                        values_batch, returns_batch, log_probs_batch,
-                        advantages_batch)
-                
                 # Perform one PPO update step. 
-                # _ppo_update now receives a tuple of tensors already on the correct device.
                 value_loss, critic_grad_norm, policy_loss, dist_entropy, \
                 actor_grad_norm, imp_weights = self._ppo_update(sample)
                 
@@ -337,13 +438,12 @@ class GR_MAPPO():
 
         # 5. Average the training statistics
         num_updates = self.ppo_epoch * num_mini_batches
-        
-        # Avoid division by zero if num_updates is 0
         if num_updates > 0:
             for k in train_infos.keys():
                 train_infos[k] /= num_updates
 
         return train_infos
+
 
     def prep_training(self):
         """Convert networks to training mode"""

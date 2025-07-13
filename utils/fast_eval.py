@@ -68,7 +68,7 @@ class FastEvaluate:
         names = []
         if self.policy is not None: 
             names.append("marl")
-        names.extend(["random_walk", "static"])
+        # names.extend(["random_walk", "static"])
         return list(set(names))
 
     @torch.no_grad()

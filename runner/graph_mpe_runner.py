@@ -85,6 +85,21 @@ class GMPERunner:
         self.trainer = GR_MAPPO(self.all_args, self.policy, device=self.device)
         print("  (Runner) 训练器初始化完成.")
 
+        # [新增] 初始化起始episode
+        self.start_episode = 0
+
+        # 如果指定了预训练模型目录，则加载模型参数
+        if self.model_dir is not None:
+            print(f"  (Runner) Attempting to restore from directory: {self.model_dir}")
+            # [修改] 我们现在加载最新的检查点
+            checkpoint_path = os.path.join(self.model_dir, "checkpoint_latest.pt")
+            resume_episode = self.restore(checkpoint_path)
+            if resume_episode > 0:
+                self.start_episode = resume_episode
+            else:
+                print("  (Runner) WARNING: Checkpoint restoration failed. Starting from scratch.")
+
+
         # 初始化经验回放缓冲区
         print("  (Runner) 初始化 Replay Buffer...")
         self.buffer = GraphReplayBuffer(
@@ -124,7 +139,7 @@ class GMPERunner:
         print(f"  (Runner) 将运行 {episodes} 个学习更新周期 ")
 
         # 核心训练循环
-        for episode in range(episodes):
+        for episode in range(self.start_episode, episodes):
             # 学习率线性下降
             self.trainer.policy.lr_decay(episode, episodes)
             
@@ -402,27 +417,42 @@ class GMPERunner:
         latest_path = os.path.join(self.save_dir, "checkpoint_latest.pt")
         torch.save(checkpoint, latest_path)
 
-    def restore(self):
-        """从指定目录加载预训练模型参数 """
-        if self.model_dir is None:
-            print("错误：未指定模型目录 (model_dir is None)，无法加载。")
-            return
-        actor_load_path = str(self.model_dir) + "/actor.pt"
-        critic_load_path = str(self.model_dir) + "/critic.pt"
+    def restore(self, checkpoint_path: str):
+        """
+        [修改后] 从指定的检查点文件加载完整的训练状态。
+        """
+        if not os.path.exists(checkpoint_path):
+            print(f"Error: Checkpoint file not found at {checkpoint_path}")
+            return False
 
-        if not os.path.exists(actor_load_path): 
-            print(f"错误：找不到 Actor 模型文件: {actor_load_path}")
-            return
-        print(f"  从文件加载 Actor: {actor_load_path}")
-        policy_actor_state_dict = torch.load(actor_load_path, map_location=self.device)
-        self.policy.actor.load_state_dict(policy_actor_state_dict)
+        print(f"  Loading training state from checkpoint: {checkpoint_path}")
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
-        if not os.path.exists(critic_load_path):
-            print(f"错误：找不到 Critic 模型文件: {critic_load_path}")
-            return
-        print(f"  从文件加载 Critic: {critic_load_path}")
-        policy_critic_state_dict = torch.load(critic_load_path, map_location=self.device)
-        self.policy.critic.load_state_dict(policy_critic_state_dict)
+            # 加载模型权重
+            self.policy.actor.load_state_dict(checkpoint['actor_state_dict'])
+            self.policy.critic.load_state_dict(checkpoint['critic_state_dict'])
+            self.policy.actor_gnn.load_state_dict(checkpoint['actor_gnn_state_dict'])
+            self.policy.critic_gnn.load_state_dict(checkpoint['critic_gnn_state_dict'])
+
+            # 加载优化器状态 (非常重要!)
+            self.policy.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
+            self.policy.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
+
+            # 加载价值归一化器状态
+            if self.trainer.value_normalizer is not None and 'value_normalizer_state_dict' in checkpoint:
+                self.trainer.value_normalizer.load_state_dict(checkpoint['value_normalizer_state_dict'])
+            
+            # 获取上一次的 episode 编号，以便计算新的总步数和学习率衰减
+            start_episode = checkpoint.get('episode', -1) + 1
+            print(f"  Successfully loaded checkpoint. Resuming from episode {start_episode}.")
+            return start_episode
+
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            import traceback
+            traceback.print_exc()
+            return -1 # 返回一个错误标识
 
 
     def process_infos(self, 

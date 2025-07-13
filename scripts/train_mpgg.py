@@ -43,21 +43,20 @@ all_args = SimpleNamespace(
     cuda_deterministic=False,
     n_training_threads=8,
     n_rollout_threads=8,            # 并行环境数 
-    num_env_steps=500000,          
+    num_env_steps=10000000,          
 
     # --- 环境特定参数 ---
-    num_agents=25,
-    world_size=7,
+    num_agents=100,
+    world_size=15,
     speed=0.05,
     radius=2.0,
     cost=1.0, 
-    r=5.0,
+    r=4.0,
     beta=10,
-    episode_length=100,                                             
-    env_max_steps = 2000,           # 环境内部逻辑回合最大步数
+    episode_length=1000,                                             
 
-    egt_rounds = 10, # 博弈模拟器参数
-    egt_steps = 50,
+    egt_rounds = 20, # 博弈模拟器参数
+    egt_steps = 100,
     k_neighbors = 4,
 
 
@@ -93,8 +92,8 @@ all_args = SimpleNamespace(
 
 
     # === PPO 算法参数 ===
-    ppo_epoch=4,                   # PPO 更新时数据重复利用次数
-    mini_batch_size = 800,
+    ppo_epoch=2,                   # PPO 更新时数据重复利用次数
+    mini_batch_size = 2000,
     entropy_coef=0.01,              
     value_loss_coef=1.0,
     lr=1e-4,                        
@@ -112,14 +111,14 @@ all_args = SimpleNamespace(
     weight_decay=0,
 
     # === 保存与日志 ===
-    save_interval=10,               
+    save_interval=5,               
     log_interval=1,                
-    global_reset_interval = 5,
+    global_reset_interval = 2,
 
     # === 评估参数 ===
     use_eval=True,
     n_eval_rollout_threads=8,       # 评估并行环境数 (可以与训练并行数不同)
-    eval_interval=50,              
+    eval_interval=40,              
     eval_rounds = 80,
     eval_steps_per_round = 800,     # 评估时每轮的步数
 
