@@ -3,13 +3,7 @@
 
 """
 MPGG 环境的优化版训练脚本入口
-
-此脚本整合了参数配置、环境创建、Runner 初始化和训练流程
-所有参数直接在脚本内定义，移除了对 config.py 和 argparse 的依赖
-配置基于之前验证可运行的版本。
 """
-
-import socket
 import setproctitle
 import numpy as np
 from pathlib import Path
@@ -18,7 +12,8 @@ if torch.cuda.is_available():
     torch.cuda.empty_cache()
 import os
 import sys
-from types import SimpleNamespace # 用于创建参数对象
+from types import SimpleNamespace 
+import yaml  
 
 # 将项目根目录添加到 Python 路径
 # 假设此脚本位于 "scripts/" 目录下
@@ -31,105 +26,26 @@ from envs.env_wrappers import GraphSubprocVecEnv # 导入并行环境包装器
 from runner.graph_mpe_runner import GMPERunner as Runner # 导入图环境 Runner
 from utils.util import print_box, print_args # 打印工具
 
-# ==============================================================================
-# == 1. 参数配置 (硬编码所有最终参数) ==
-# ==============================================================================
-# 使用 SimpleNamespace 创建配置对象 all_args，包含所有必需的参数。
-all_args = SimpleNamespace(
-    # --- 实验标识与基本设置 ---
-    user_name="local_optimized",      
-    seed=1,
-    cuda=True,
-    cuda_deterministic=False,
-    n_training_threads=8,
-    n_rollout_threads=8,            # 并行环境数 
-    num_env_steps=10000000,          
+# 在这里指定配置文件名
+CONFIG_NAME = "N25_L100.yaml"
 
-    # --- 环境特定参数 ---
-    num_agents=100,
-    world_size=15,
-    speed=0.05,
-    radius=2.0,
-    cost=1.0, 
-    r=4.0,
-    beta=10,
-    episode_length=1000,                                             
+def load_config(config_name):
+    """从YAML文件加载配置并转换为SimpleNamespace对象"""
+    config_path = Path(project_root) / "config" / config_name
+    if not config_path.exists():
+        print(f"错误: 配置文件不存在于 {config_path}")
+        sys.exit(1)
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config_dict = yaml.safe_load(f)
+    
+    # 将字典转换为SimpleNamespace，以保持 all_args.param 的访问方式
+    return SimpleNamespace(**config_dict)
 
-    egt_rounds = 20, # 博弈模拟器参数
-    egt_steps = 100,
-    k_neighbors = 4,
+# 加载配置
+all_args = load_config(CONFIG_NAME)
 
-
-    # === 网络结构与特性 ===
-    share_policy=True,
-    hidden_size=64,                
-    layer_N=2,                     
-    use_ReLU=True,
-    use_orthogonal=True,
-    gain=0.01,
-    use_feature_normalization=True,
-    use_popart=True,               
-    use_valuenorm=False,           
-    split_batch=True,
-    max_batch_size=1024,
-
-    # === GNN 相关参数 ===
-    use_gnn_policy=True,
-    gnn_hidden_size=64,           
-    gnn_num_heads=4,                # gnn 多头注意力机制的头数
-    gnn_concat_heads=True,
-    gnn_layer_N=2,
-    gnn_use_ReLU=True,
-    embed_hidden_size=64,          
-    embed_layer_N=1,                
-    embed_use_ReLU=True,
-    embed_add_self_loop=True,
-    max_edge_dist=2.0,
-    graph_feat_type="relative",
-    actor_graph_aggr="node",
-    critic_graph_aggr="global",
-    global_aggr_type="mean",
-
-
-    # === PPO 算法参数 ===
-    ppo_epoch=2,                   # PPO 更新时数据重复利用次数
-    mini_batch_size = 2000,
-    entropy_coef=0.01,              
-    value_loss_coef=1.0,
-    lr=1e-4,                        
-    critic_lr=1e-5,                 
-    clip_param=0.2,
-    opti_eps=1e-5,
-    max_grad_norm=5.0,
-    use_max_grad_norm=True,
-    use_clipped_value_loss=True,
-    use_gae=True,
-    gamma=0.99,
-    gae_lambda=0.95,
-    use_huber_loss=False,
-    huber_delta=10.0,
-    weight_decay=0,
-
-    # === 保存与日志 ===
-    save_interval=5,               
-    log_interval=1,                
-    global_reset_interval = 2,
-
-    # === 评估参数 ===
-    use_eval=True,
-    n_eval_rollout_threads=8,       # 评估并行环境数 (可以与训练并行数不同)
-    eval_interval=40,              
-    eval_rounds = 80,
-    eval_steps_per_round = 800,     # 评估时每轮的步数
-
-    # === 是否加载预训练模型 ===
-    model_dir = None, 
-)
-
-# ==============================================================================
-# == 2. 环境创建函数  ==
-# ==============================================================================
-
+# 环境创建函数
 def make_train_env(all_args: SimpleNamespace):
     """ 
     创建并行训练环境 
@@ -167,14 +83,12 @@ def make_eval_env(all_args: SimpleNamespace):
     print(f"  创建 {all_args.n_eval_rollout_threads} 个并行 SubprocVecEnv 用于评估")
     return GraphSubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
 
-# ==============================================================================
-# == 3. 主函数 (保持不变) ==
-# ==============================================================================
+# 主函数
 
 def main():
     """主训练函数 (优化版，直接使用 all_args 对象)"""
 
-    # --- 1. 设置设备 ---
+    # 设置设备
     if all_args.cuda and torch.cuda.is_available():
         print_box("选择使用 GPU...")
         device = torch.device("cuda:0")
@@ -188,15 +102,14 @@ def main():
         device = torch.device("cpu")
         torch.set_num_threads(all_args.n_training_threads)
 
-    # --- 2. 打印最终配置 ---
+    # 打印最终配置
     print("--- Final Configuration ---")
     print_args(all_args)
     print("-" * 50)
 
-    # --- 3. 设置日志目录 ---
+    # 设置日志目录
     run_dir = (Path(project_root) / "results")
-    # MODIFICATION: Add user_name to run_dir path for better organization
-    experiment_name = f"{all_args.user_name}_N{all_args.num_agents}_L{all_args.episode_length}_H{all_args.hidden_size}_GNNH{all_args.gnn_hidden_size}_Ent{all_args.entropy_coef}"
+    experiment_name = f"{all_args.user_name}_N{all_args.num_agents}_L{all_args.episode_length}_K{all_args.k_neighbors}_R{all_args.r}"
     run_dir = run_dir / experiment_name
     run_num = 1
     while (run_dir / f"run{run_num}").exists():
@@ -206,16 +119,16 @@ def main():
         os.makedirs(str(run_dir))
     print(f"日志和模型将保存在: {run_dir}")
 
-    # --- 4. 设置进程标题 ---
-    setproctitle.setproctitle(f"{str(run_dir)}") # MODIFICATION: More descriptive process title
+    # 设置进程标题
+    setproctitle.setproctitle(f"{str(run_dir)}") 
 
-    # --- 5. 设置随机种子 ---
+    # 设置随机种子
     print(f"设置随机种子: {all_args.seed}")
     torch.manual_seed(all_args.seed)
     torch.cuda.manual_seed_all(all_args.seed)
     np.random.seed(all_args.seed)
 
-    # --- 6. 初始化环境 ---
+    # 初始化环境
     print("初始化训练环境...")
     try:
         envs = make_train_env(all_args)
@@ -236,7 +149,7 @@ def main():
             print(f"警告：初始化评估环境失败: {e}")
             eval_envs = None 
 
-    # --- 7. 准备 Runner 配置 ---
+    # 准备 Runner 配置
     print("准备 Runner 配置...")
     config = {
         "all_args": all_args,
@@ -246,7 +159,7 @@ def main():
         "run_dir": run_dir,
     }
 
-    # --- 8. 初始化 Runner ---
+    # 初始化 Runner
     print(f"初始化 Runner ({Runner.__name__})...")
     try:
         runner = Runner(config)
@@ -259,7 +172,7 @@ def main():
         if eval_envs: eval_envs.close()
         sys.exit(1)
 
-    # --- 9. 打印网络结构 ---
+    # 打印网络结构
     try:
         print_box("Actor Network", 80)
         if hasattr(runner, 'policy') and runner.policy and hasattr(runner.policy, 'actor'):
@@ -271,7 +184,7 @@ def main():
         else: print("  无法访问 Critic 网络结构。")
     except Exception as e: print(f"  打印网络结构时出错: {e}")
 
-    # --- 10. 开始训练 ---
+    # 开始训练
     print_box("开始训练流程...")
     training_failed = False
     try:
@@ -286,7 +199,7 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
-        # --- 11. 结束清理 ---
+        # 结束清理
         print("训练结束或中断，正在关闭环境...")
         try:
             envs.close()
@@ -296,7 +209,7 @@ def main():
         except Exception as e:
             print(f"  关闭环境时出错: {e}")
 
-        # --- 12. 保存本地日志 ---
+        # 保存本地日志
         if hasattr(runner, 'writter') and runner.writter is not None:
             print("正在导出 TensorBoard 日志...")
             try:
@@ -315,8 +228,8 @@ def main():
     if training_failed:
         sys.exit(1)
 
-# ==============================================================================
-# == 4. 脚本入口 ==
-# ==============================================================================
+
+
+# 脚本入口 ==
 if __name__ == "__main__":
     main()

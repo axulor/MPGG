@@ -65,69 +65,153 @@ class PGGSimulator:
         
         return interaction_mask
 
+    # def run_simulation(self, initial_strategies: np.ndarray, adj: np.ndarray) -> np.ndarray:
+    #     R, N = self.egt_rounds, self.num_agents
+        
+    #     # [核心修改] 在模拟开始前，构建与GNN一致的交互图
+    #     interaction_mask = self._get_k_neighbor_mask(adj)
+        
+    #     # 在这个有向的k-近邻图上定义博弈小组和模仿对象
+    #     # 博弈小组：一个智能体i，与所有它能“看到”的邻居j进行博弈
+    #     #           即 interaction_mask[i, j] == True
+    #     #           注意：为了计算小组收益，我们需要考虑小组的完整成员，
+    #     #           这通常是对称的。我们将交互图变为无向图来定义小组。
+    #     group_mask = interaction_mask | interaction_mask.T
+        
+    #     # 模仿对象：一个智能体i，只能模仿它能“看到”的邻居j
+    #     #           我们直接使用有向的 interaction_mask 作为 neighbor_mask
+    #     neighbor_mask = interaction_mask
+
+    #     # 初始化所有轮次的虚拟策略
+    #     virtual_strategies = np.tile(initial_strategies, (R, 1))
+    #     total_cumulative_payoffs = np.zeros((R, N), dtype=np.float32)
+
+    #     # 主演化循环
+    #     for _ in range(self.egt_steps):
+    #         # 将构建好的掩码传递下去
+    #         step_payoffs = self._compute_payoffs_vectorized(virtual_strategies, group_mask)
+    #         total_cumulative_payoffs += step_payoffs
+    #         virtual_strategies = self._update_strategies_vectorized(virtual_strategies, step_payoffs, neighbor_mask)
+
+    #     final_average_payoffs = np.mean(total_cumulative_payoffs, axis=0)
+    #     return final_average_payoffs
+
+    # def _compute_payoffs_vectorized(self, strategies: np.ndarray, group_mask: np.ndarray) -> np.ndarray:
+    #     """
+    #     向量化计算收益。
+    #     现在接收一个精确定义博弈小组的 group_mask。
+    #     """
+    #     R, N = strategies.shape
+        
+    #     # 在小组定义中加入自己
+    #     group_mask_with_self = group_mask | np.eye(N, dtype=bool)
+
+    #     num_group_members = group_mask_with_self.sum(axis=1)
+    #     num_group_cooperators = strategies @ group_mask_with_self.T
+        
+    #     avg_group_payoffs = np.divide(
+    #         num_group_cooperators * self.cost * self.r,
+    #         num_group_members,
+    #         out=np.zeros_like(num_group_cooperators, dtype=np.float32),
+    #         where=(num_group_members != 0)
+    #     )
+        
+    #     total_gross_gains = avg_group_payoffs @ group_mask_with_self
+    #     n_games_played = group_mask_with_self.sum(axis=0)
+    #     total_costs = strategies * n_games_played * self.cost
+    #     total_net_gains = total_gross_gains - total_costs
+
+    #     average_net_payoffs = np.divide(
+    #         total_net_gains,
+    #         n_games_played,
+    #         out=np.zeros_like(total_net_gains),
+    #         where=(n_games_played != 0)
+    #     )
+    #     return average_net_payoffs
+
+    # ================ START: 建议替换到 pgg_sim.py 的内容 ================
+
     def run_simulation(self, initial_strategies: np.ndarray, adj: np.ndarray) -> np.ndarray:
         R, N = self.egt_rounds, self.num_agents
         
-        # [核心修改] 在模拟开始前，构建与GNN一致的交互图
         interaction_mask = self._get_k_neighbor_mask(adj)
         
-        # 在这个有向的k-近邻图上定义博弈小组和模仿对象
-        # 博弈小组：一个智能体i，与所有它能“看到”的邻居j进行博弈
-        #           即 interaction_mask[i, j] == True
-        #           注意：为了计算小组收益，我们需要考虑小组的完整成员，
-        #           这通常是对称的。我们将交互图变为无向图来定义小组。
-        group_mask = interaction_mask | interaction_mask.T
-        
-        # 模仿对象：一个智能体i，只能模仿它能“看到”的邻居j
-        #           我们直接使用有向的 interaction_mask 作为 neighbor_mask
+        # 博弈小组的发起 和 模仿对象 都基于这个有向的 k-近邻图
         neighbor_mask = interaction_mask
 
-        # 初始化所有轮次的虚拟策略
         virtual_strategies = np.tile(initial_strategies, (R, 1))
+        # total_cumulative_payoffs 用于累加每一轮的“最终收益”
         total_cumulative_payoffs = np.zeros((R, N), dtype=np.float32)
 
         # 主演化循环
         for _ in range(self.egt_steps):
-            # 将构建好的掩码传递下去
-            step_payoffs = self._compute_payoffs_vectorized(virtual_strategies, group_mask)
-            total_cumulative_payoffs += step_payoffs
-            virtual_strategies = self._update_strategies_vectorized(virtual_strategies, step_payoffs, neighbor_mask)
+            # 计算当前这一步的“最终收益”(即平均每场净收益)
+            step_final_payoffs = self._compute_payoffs_vectorized(virtual_strategies, neighbor_mask)
+            
+            # 累加这一步的“最终收益”
+            total_cumulative_payoffs += step_final_payoffs
+            
+            # 使用这一步的“最终收益”来更新策略
+            virtual_strategies = self._update_strategies_vectorized(virtual_strategies, step_final_payoffs, neighbor_mask)
 
-        final_average_payoffs = np.mean(total_cumulative_payoffs, axis=0)
-        return final_average_payoffs
+        # 最终的RL奖励是“最终收益”在所有 egt_steps 上的累加和的平均
+        final_rl_reward = np.mean(total_cumulative_payoffs, axis=0)
 
-    def _compute_payoffs_vectorized(self, strategies: np.ndarray, group_mask: np.ndarray) -> np.ndarray:
+        return final_rl_reward
+
+    # 这个函数现在只返回一个值：average_net_payoffs，即“最终收益”
+    def _compute_payoffs_vectorized(self, strategies: np.ndarray, focal_game_mask: np.ndarray) -> np.ndarray:
         """
-        向量化计算收益。
-        现在接收一个精确定义博弈小组的 group_mask。
+        向量化计算每个智能体的“平均每场净收益”。
+        这个返回值将用于策略模仿和奖励累积。
+        
+        Args:
+            strategies (np.ndarray): 形状 (R, N)，智能体在R轮虚拟演化中的策略。
+            focal_game_mask (np.ndarray): 形状 (N, N)，有向的k-近邻图，
+                                        mask[i, j]=True 表示 i 主动选择 j 为邻居。
         """
         R, N = strategies.shape
         
-        # 在小组定义中加入自己
-        group_mask_with_self = group_mask | np.eye(N, dtype=bool)
-
-        num_group_members = group_mask_with_self.sum(axis=1)
-        num_group_cooperators = strategies @ group_mask_with_self.T
+        # 1. 确定每个由智能体 i 发起的博弈小组的构成
+        # focal_game_mask_with_self[i, :] 代表以 i 为中心的博弈小组的成员
+        focal_game_mask_with_self = focal_game_mask | np.eye(N, dtype=bool)
         
-        avg_group_payoffs = np.divide(
-            num_group_cooperators * self.cost * self.r,
-            num_group_members,
-            out=np.zeros_like(num_group_cooperators, dtype=np.float32),
-            where=(num_group_members != 0)
+        # 2. 计算 N 个不同博弈的公共池平均收益
+        # game_group_sizes[i] 是以 i 为中心的博弈小组的人数
+        game_group_sizes = focal_game_mask_with_self.sum(axis=1) # 形状 (N,)
+        # game_num_cooperators[r, i] 是在第 r 轮，以 i 为中心的博弈小组中的合作者数量
+        game_num_cooperators = strategies @ focal_game_mask_with_self.T # 形状 (R, N)
+        # avg_pool_payouts[r, i] 是在第 r 轮，以 i 为中心的博弈小组的平均每人收益
+        avg_pool_payouts = np.divide(
+            game_num_cooperators * self.cost * self.r,
+            game_group_sizes,
+            out=np.zeros_like(game_num_cooperators, dtype=np.float32),
+            where=(game_group_sizes != 0)
         )
-        
-        total_gross_gains = avg_group_payoffs @ group_mask_with_self
-        n_games_played = group_mask_with_self.sum(axis=0)
-        total_costs = strategies * n_games_played * self.cost
-        total_net_gains = total_gross_gains - total_costs
 
+        # 3. 计算每个智能体的总毛收益
+        # total_gross_gains[r, j] = sum_{i | j is in i's game} avg_pool_payouts[r, i]
+        # 智能体 j 的总毛收益，等于它参与的所有博弈的平均收益之和。
+        total_gross_gains = avg_pool_payouts @ focal_game_mask_with_self.T # 形状 (R, N)
+
+        # 4. 计算每个智能体参与的博弈总次数和总成本
+        # n_games_played[j] 是智能体 j 参与的博弈总次数
+        # 等于它被别人选中的次数 + 它自己发起的一次
+        n_games_played = focal_game_mask_with_self.T.sum(axis=0) # 形状 (N,)
+        # total_costs[r, j] 是合作者 j 在 r 轮付出的总成本
+        total_costs = strategies * n_games_played * self.cost # 形状 (R, N)
+
+        # 5. 计算总净收益和平均每场净收益 (即您定义的“最终收益”)
+        total_net_gains = total_gross_gains - total_costs
         average_net_payoffs = np.divide(
             total_net_gains,
             n_games_played,
             out=np.zeros_like(total_net_gains),
             where=(n_games_played != 0)
         )
+        
         return average_net_payoffs
+
 
     def _update_strategies_vectorized(self, strategies: np.ndarray, payoffs: np.ndarray, neighbor_mask: np.ndarray) -> np.ndarray:
         """

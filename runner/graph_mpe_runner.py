@@ -1,6 +1,6 @@
 import time
 import numpy as np
-from numpy import ndarray as arr # 类型别名，方便书写
+from numpy import ndarray as arr 
 from typing import Tuple, Dict, List 
 import torch
 import os
@@ -161,14 +161,8 @@ class GMPERunner:
             # 并行 rollout 循环
             for step in range(self.episode_length):                            
                 values, actions, action_log_probs = self.sample_policy_outputs()    # 采样动作
-                # print(f"\n") 
-                # print(f"[DEBUG]  actions: {actions.shape}, actions: {actions.dtype}")
-                # print(f"[DEBUG]  action_log_probs: {action_log_probs.shape}, action_log_probs: {action_log_probs.dtype}")
-                # print(f"[DEBUG]  values: {values.shape}, values: {values.dtype}")         
+                
                 obs, rewards, adj, dones, infos = self.envs.step(actions)    # 执行动作,obs, agent_id, reward, adj, done, info   
-                # print(f"[DEBUG]  obs: {obs.shape}, obs: {obs.dtype}")
-                # print(f"[DEBUG]  rewards: {rewards.shape}, rewards: {rewards.dtype}")
-                # print(f"[DEBUG]  adj: {adj.shape}, adj: {adj.dtype}") 
 
                 # 处理环境指标信息
                 for thread in range(self.n_rollout_threads):
@@ -180,16 +174,6 @@ class GMPERunner:
                             segment_coop_rates[step, thread] = coop_rate
                         if avg_reward is not None:
                             segment_avg_rewards[step, thread] = avg_reward
-                
-                # # 打印准备的数据形状
-                # print(f"[DEBUG]  obs: {obs.shape}, obs: {obs.dtype}")
-                # print(f"[DEBUG]  adj: {adj.shape}, adj: {adj.dtype}")
-                # print(f"[DEBUG]  actions: {actions.shape}, actions: {actions.dtype}")
-                # print(f"[DEBUG]  action_log_probs: {action_log_probs.shape}, action_log_probs: {action_log_probs.dtype}")
-                # print(f"[DEBUG]  values: {values.shape}, values: {values.dtype}")
-                # print(f"[DEBUG]  rewards: {rewards.shape}, rewards: {rewards.dtype}")
-                # print(f"[DEBUG]  dones: {dones.shape}, dones: {dones.dtype}")
-                # print(f"\n")
 
                 # 向 buffer 中插入数据 
                 self.buffer.insert(obs, adj, actions, action_log_probs, values, rewards, dones)
@@ -203,13 +187,8 @@ class GMPERunner:
                 last_adj = torch.from_numpy(self.buffer.adj[-1]).float().to(self.device)
 
                 next_values = self.policy.get_values(last_obs, last_adj) # Returns (M, 1)
-                # print(f"[DEBUG]  next_values: {next_values.shape}, next_values: {next_values.dtype}")
-
                 next_values = _t2n(next_values).reshape(self.n_rollout_threads, 1, 1)
-                # print(f"[DEBUG]  next_values: {next_values.shape}, next_values: {next_values.dtype}")
                 next_values = np.repeat(next_values, self.num_agents, axis=1) #(M,N,1)
-                # print(f"[DEBUG]  next_values: {next_values.shape}, next_values: {next_values.dtype}")
-                # print(f"\n")
 
             self.buffer.compute_returns(next_values, self.trainer.value_normalizer) # 在 buffer 中计算 returns 
             print("  (Runner) 计算完成.")
@@ -276,7 +255,6 @@ class GMPERunner:
         """
         obs, adj = self.envs.reset() # resets all parallel envs
 
-        # Store initial observations at buffer.obs[0], etc.
         self.buffer.obs[0] = obs.copy()
         self.buffer.adj[0] = adj.copy()
         self.buffer.dones[0].fill(0.0)
@@ -298,8 +276,6 @@ class GMPERunner:
         # Get data from buffer for the current step
         obs = torch.from_numpy(self.buffer.obs[self.buffer.step]).float().to(self.device)
         adj = torch.from_numpy(self.buffer.adj[self.buffer.step]).float().to(self.device)
-        # print(f"[DEBUG]in sample_policy_outputs,  obs: {obs.shape}, obs: {obs.dtype}")
-        # print(f"[DEBUG]in sample_policy_outputs,  adj: {adj.shape}, adj: {adj.dtype}")
 
         
         # Generate IDs on the fly
@@ -323,10 +299,7 @@ class GMPERunner:
             obs_flatten, obs, adj, agent_id_flatten, env_id_flatten
         )
 
-        # print(f"[DEBUG]in sample_policy_outputs,  torch_actions: {torch_actions.shape}, torch_actions: {torch_actions.dtype}") # (200,2)
-        # print(f"[DEBUG]in sample_policy_outputs,  torch_action_log_probs: {torch_action_log_probs.shape}, torch_action_log_probs: {torch_action_log_probs.dtype}") # (200,1)
-        
-        # # 调用策略网络获取价值估计
+        # 调用策略网络获取价值估计
         torch_values = self.policy.get_values(obs, adj) # Returns (M, 1)
         values_per_agent = torch_values.repeat_interleave(self.num_agents, dim=0) # (M*N, 1)
 
@@ -358,22 +331,6 @@ class GMPERunner:
         else:
             print("评估未产生数据。")
         print(f"--- 评估结束 (在网络更新次数为 {episode} 时) ---")
-
-    # def save(self):
-    #     """保存策略的 Actor 和 Critic 网络参数 """
-    #     # 检查保存目录是否存在
-    #     if not os.path.exists(self.save_dir):
-    #         os.makedirs(self.save_dir)
-    #         print(f"  创建模型保存目录: {self.save_dir}")
-
-    #     actor_save_path = str(self.save_dir) + "/actor.pt"
-    #     critic_save_path = str(self.save_dir) + "/critic.pt"
-    #     print(f"  保存 Actor 到: {actor_save_path}")
-    #     print(f"  保存 Critic 到: {critic_save_path}")
-    #     policy_actor = self.trainer.policy.actor
-    #     torch.save(policy_actor.state_dict(), actor_save_path)
-    #     policy_critic = self.trainer.policy.critic
-    #     torch.save(policy_critic.state_dict(), critic_save_path)
 
 
     def save(self, episode: int):
@@ -419,7 +376,7 @@ class GMPERunner:
 
     def restore(self, checkpoint_path: str):
         """
-        [修改后] 从指定的检查点文件加载完整的训练状态。
+        从指定的检查点文件加载完整的训练状态
         """
         if not os.path.exists(checkpoint_path):
             print(f"Error: Checkpoint file not found at {checkpoint_path}")

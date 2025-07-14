@@ -7,6 +7,7 @@ from tqdm import tqdm
 from pathlib import Path
 import os
 import sys
+import yaml
 from types import SimpleNamespace
 
 # --- 1. 将项目根目录添加到Python路径，确保能找到其他模块 ---
@@ -21,102 +22,18 @@ from envs.env_wrappers import GraphSubprocVecEnv # [NEW] 导入并行环境包�
 from algorithms.graph_MAPPOPolicy import GR_MAPPOPolicy
 from utils.util import print_box
 
-def get_config_for_analysis():
-    """
-    创建一个独立的、与训练时完全匹配的配置对象。
-    这是保证模型结构一致性的关键。
-    """
-    args = SimpleNamespace(
-        # --- 实验标识与基本设置 ---
-        user_name="local_optimized",      
-        seed=1,
-        cuda=True,
-        cuda_deterministic=False,
-        n_training_threads=8,
-        n_rollout_threads=8,            # 并行环境数 
-        num_env_steps=10000000,          
-
-        # --- 环境特定参数 ---
-        num_agents=100,
-        world_size=15,
-        speed=0.05,
-        radius=2.0,
-        cost=1.0, 
-        r=4.0,
-        beta=10,
-        episode_length=1000,                                             
-
-        egt_rounds = 20, # 博弈模拟器参数
-        egt_steps = 100,
-        k_neighbors = 4,
-
-
-        # === 网络结构与特性 ===
-        share_policy=True,
-        hidden_size=64,                
-        layer_N=2,                     
-        use_ReLU=True,
-        use_orthogonal=True,
-        gain=0.01,
-        use_feature_normalization=True,
-        use_popart=True,               
-        use_valuenorm=False,           
-        split_batch=True,
-        max_batch_size=1024,
-
-        # === GNN 相关参数 ===
-        use_gnn_policy=True,
-        gnn_hidden_size=64,           
-        gnn_num_heads=4,                # gnn 多头注意力机制的头数
-        gnn_concat_heads=True,
-        gnn_layer_N=2,
-        gnn_use_ReLU=True,
-        embed_hidden_size=64,          
-        embed_layer_N=1,                
-        embed_use_ReLU=True,
-        embed_add_self_loop=True,
-        max_edge_dist=2.0,
-        graph_feat_type="relative",
-        actor_graph_aggr="node",
-        critic_graph_aggr="global",
-        global_aggr_type="mean",
-
-
-        # === PPO 算法参数 ===
-        ppo_epoch=2,                   # PPO 更新时数据重复利用次数
-        mini_batch_size = 2000,
-        entropy_coef=0.01,              
-        value_loss_coef=1.0,
-        lr=1e-4,                        
-        critic_lr=1e-5,                 
-        clip_param=0.2,
-        opti_eps=1e-5,
-        max_grad_norm=5.0,
-        use_max_grad_norm=True,
-        use_clipped_value_loss=True,
-        use_gae=True,
-        gamma=0.99,
-        gae_lambda=0.95,
-        use_huber_loss=False,
-        huber_delta=10.0,
-        weight_decay=0,
-
-        # === 保存与日志 ===
-        save_interval=5,               
-        log_interval=1,                
-        global_reset_interval = 2,
-
-        # === 评估参数 ===
-        use_eval=True,
-        n_eval_rollout_threads=8,       # 评估并行环境数 (可以与训练并行数不同)
-        eval_interval=40,              
-        eval_rounds = 80,
-        eval_steps_per_round = 800,     # 评估时每轮的步数
-
-        # === 是否加载预训练模型 ===
-        model_dir = None, 
-    )
-    return args
+def load_config_for_analysis(config_name, model_dir):
+    config_path = Path(project_root) / "config" / config_name
+    if not config_path.exists():
+        print(f"错误: 配置文件不存在于 {config_path}")
+        sys.exit(1)
+    
+    with open(config_path, 'r') as f:
+        config_dict = yaml.safe_load(f)
+    
+    # 覆盖模型路径
+    config_dict['model_dir'] = model_dir
+    return SimpleNamespace(**config_dict)
 
 class PolicyAnalyzer:
     def __init__(self, args: SimpleNamespace, checkpoint_path: str):
@@ -288,6 +205,13 @@ def main():
     # 定义模拟参数
     num_rounds = 10 # 8个并行环境跑10轮，总共80次模拟
     simulation_steps = 800
+    parser = argparse.ArgumentParser(description="Analysis script for trained MARL policies.")
+    parser.add_argument("--config", type=str, required=True, help="与训练时使用的配置文件名相同 (e.g., N100_L1000.yaml)。")
+    parser.add_argument("--model_run_path", type=str, required=True, help="已训练模型的完整运行路径 (e.g., results/your_username/N100_L1000_k4_r4/run1)。")
+    args = parser.parse_args()
+
+    # 构造模型目录的完整路径
+    model_dir = Path(args.model_run_path) / "models"
 
     # --- 2. 构建路径和获取配置 ---
     checkpoint_path = Path(project_root) / "results" / experiment_name / "models" / model_filename
@@ -298,7 +222,7 @@ def main():
         print(f"Error: Checkpoint file not found at '{checkpoint_path}'")
         return
 
-    analysis_args = get_config_for_analysis()
+    analysis_args = load_config_for_analysis(args.config, str(model_dir))
 
     # --- 3. 执行分析 ---
     analyzer = PolicyAnalyzer(analysis_args, str(checkpoint_path))
