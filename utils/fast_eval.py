@@ -73,90 +73,93 @@ class FastEvaluate:
 
     @torch.no_grad()
     def _run_one_policy_evaluation(self, policy_name: str) -> Dict[str, np.ndarray]:
+        """
+        [重构后] 使用分批并行的方式高效执行评估。
+        """
+        # 最终存储所有 round 数据的容器
         all_round_coop_trajectories = np.full((self.eval_rounds, self.eval_steps_per_round), np.nan, dtype=np.float32)
         all_round_reward_trajectories = np.full((self.eval_rounds, self.eval_steps_per_round), np.nan, dtype=np.float32)
 
         if policy_name == "marl" and self.policy is not None:
             self.policy.prep_evaluating()
         
+        # 计算需要多少个批次来完成所有 rounds
+        num_batches = int(np.ceil(self.eval_rounds / self.n_eval_rollout_threads))
+        
         print(f"    Evaluating policy '{policy_name}':")
-        for r_idx in tqdm(range(self.eval_rounds), desc=f"      Policy '{policy_name}' Rounds", leave=False, ncols=100):
+        # 使用 tqdm 显示总的批次进度
+        for batch_idx in tqdm(range(num_batches), desc=f"      Policy '{policy_name}' Batches", leave=False, ncols=100):
             
+            # 1. 重置当前批次的所有并行环境
             obs_np, adj_np = self.eval_envs.reset()
             
+            # 2. 在当前批次的所有并行环境上，完整地运行 eval_steps_per_round
             for step_idx in range(self.eval_steps_per_round):
+                # --- 动作生成部分 (与您原代码完全一致，无需修改) ---
                 actions_to_env_np = np.zeros((self.n_eval_rollout_threads, self.num_agents, self.action_dim), dtype=np.float32)
 
                 if policy_name == "marl":
-                    # ... (MARL action generation logic is correct) ...
                     flat_obs_t = torch.from_numpy(obs_np.reshape(-1, obs_np.shape[-1])).float().to(self.device)
                     node_obs_for_gnn_t = torch.from_numpy(obs_np).float().to(self.device)
                     adj_for_gnn_t = torch.from_numpy(adj_np).float().to(self.device)
                     
-                    agent_id_np = np.arange(self.num_agents)[np.newaxis, :, np.newaxis]
-                    agent_id_np = np.repeat(agent_id_np, self.n_eval_rollout_threads, axis=0)
-                    flat_agent_id_t = torch.from_numpy(agent_id_np.reshape(-1, 1)).long().to(self.device)
-                    
-                    env_id_np = np.arange(self.n_eval_rollout_threads)[:, np.newaxis, np.newaxis]
-                    env_id_np = np.repeat(env_id_np, self.num_agents, axis=1)
-                    flat_env_id_t = torch.from_numpy(env_id_np.reshape(-1, 1)).long().to(self.device)
-                    
+                    # Simplified agent and env ID generation
+                    agent_id_t = torch.arange(self.num_agents, device=self.device).view(1, -1, 1).repeat(self.n_eval_rollout_threads, 1, 1).view(-1, 1)
+                    env_id_t = torch.arange(self.n_eval_rollout_threads, device=self.device).view(-1, 1, 1).repeat(1, self.num_agents, 1).view(-1, 1)
+
                     torch_actions, _ = self.policy.get_actions(
-                        flat_obs_t,
-                        node_obs_for_gnn_t,
-                        adj_for_gnn_t,
-                        flat_agent_id_t,
-                        flat_env_id_t
+                        flat_obs_t, node_obs_for_gnn_t, adj_for_gnn_t, agent_id_t, env_id_t
                     )
                     actions_from_policy_flat_np = _t2n(torch_actions)
                     if actions_from_policy_flat_np is None: 
                         actions_from_policy_flat_np = np.random.rand(self.n_eval_rollout_threads * self.num_agents, self.action_dim) * 2 - 1
                     
                     actions_to_env_np = actions_from_policy_flat_np.reshape(self.n_eval_rollout_threads, self.num_agents, -1)
-                
+
                 elif policy_name == "random_walk":
-                    # ... (random_walk logic is correct) ...
                     action_space_sample = self.eval_envs.action_space[0]
                     low, high = action_space_sample.low, action_space_sample.high
+                    # 修复后的代码
                     target_shape = (self.n_eval_rollout_threads, self.num_agents, self.action_dim)
                     actions_to_env_np = np.random.uniform(low=low, high=high, size=target_shape).astype(np.float32)
                 
                 elif policy_name == "static":
-                    # ... (static logic is correct) ...
                     actions_to_env_np.fill(0.0)
                 
+                # 3. 与环境交互
                 next_obs_np, rewards, next_adj_np, dones, infos = self.eval_envs.step(actions_to_env_np)
                 
-                # --- [FIXED] Correctly process the `infos` list of dictionaries ---
-                step_coop_rates_this_step: List[float] = []
-                step_rewards_this_step: List[float] = [] 
-                for thread_idx in range(self.n_eval_rollout_threads):
-                    info = infos[thread_idx] # `info` is now a dictionary
-                    if info: # Check if the dictionary is not empty
-                        cr = info.get("step_cooperation_rate")
-                        ar_manual = np.mean(rewards[thread_idx])
-                        
-                        if cr is not None:
-                            step_coop_rates_this_step.append(cr)
-                        
-                        # Always append reward, even if it's 0 or nan
-                        step_rewards_this_step.append(ar_manual)
+                # 4. [修改] 将当前批次的结果存入总容器的正确位置
+                # --- 数据记录部分 (重构后) ---
+                start_round_idx = batch_idx * self.n_eval_rollout_threads
+                end_round_idx = start_round_idx + self.n_eval_rollout_threads
                 
-                all_round_coop_trajectories[r_idx, step_idx] = np.mean(step_coop_rates_this_step) if step_coop_rates_this_step else np.nan
-                all_round_reward_trajectories[r_idx, step_idx] = np.mean(step_rewards_this_step) if step_rewards_this_step else np.nan
-                # --- Metric recording logic fixed ---
+                # 处理 infos，一次性提取所有并行线程的数据
+                batch_coop_rates = [info.get("step_cooperation_rate", np.nan) for info in infos]
+                batch_rewards = np.mean(rewards, axis=1).flatten() # (n_eval_rollout_threads,)
 
-                obs_np = next_obs_np
-                adj_np = next_adj_np
+                # 将数据填充到总轨迹矩阵的对应行和列
+                # 注意：如果最后一个批次不足 n_eval_rollout_threads，只填充有效部分
+                actual_threads_in_batch = len(batch_coop_rates)
+                effective_end_round_idx = start_round_idx + actual_threads_in_batch
                 
-                if np.all(dones): 
-                    break 
+                all_round_coop_trajectories[start_round_idx:effective_end_round_idx, step_idx] = batch_coop_rates
+                all_round_reward_trajectories[start_round_idx:effective_end_round_idx, step_idx] = batch_rewards
+                
+                obs_np, adj_np = next_obs_np, next_adj_np
+                
+                if np.all(dones): break 
         
-        # ... (final calculation of mean/std is correct) ...
-        mean_coop_curve = np.nanmean(all_round_coop_trajectories, axis=0)
-        std_coop_curve = np.nanstd(all_round_coop_trajectories, axis=0)
-        mean_reward_curve = np.nanmean(all_round_reward_trajectories, axis=0)
-        std_reward_curve = np.nanstd(all_round_reward_trajectories, axis=0)
+        # 5. [修改] 对最终结果进行计算 (与原代码逻辑一致，但现在处理的是完整的数据)
+        # 确保只对实际运行过的rounds计算均值和方差，防止最后一个批次未满时引入偏差
+        valid_rounds_data_coop = all_round_coop_trajectories[:self.eval_rounds]
+        valid_rounds_data_reward = all_round_reward_trajectories[:self.eval_rounds]
+
+        mean_coop_curve = np.nanmean(valid_rounds_data_coop, axis=0)
+        std_coop_curve = np.nanstd(valid_rounds_data_coop, axis=0)
+        mean_reward_curve = np.nanmean(valid_rounds_data_reward, axis=0)
+        std_reward_curve = np.nanstd(valid_rounds_data_reward, axis=0)
+
         policy_eval_results = {
             "cooperation_rate_curve": mean_coop_curve,
             "cooperation_rate_std_curve": std_coop_curve,
@@ -164,6 +167,7 @@ class FastEvaluate:
             "mean_reward_std_curve": std_reward_curve,
         }
         return policy_eval_results
+
 
     def eval_policy(self) -> Dict[str, Any]:
         # This method's logic is about caching and orchestration. It is correct and does not need changes.
