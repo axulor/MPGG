@@ -74,10 +74,12 @@ class GraphReplayBuffer(object):
         gae = 0.0
         for step in reversed(range(self.episode_length)): # step_idx from L-1 down to 0
 
-            if self.use_valuenorm and value_normalizer is not None:
+            if (self.use_popart or self.use_valuenorm) and value_normalizer is not None:
+                # 只要使用了 value normalizer (无论是 PopArt 还是 ValueNorm)
+                # 就在计算 GAE 前，将 value 反归一化到原始尺度
                 v_s_t_plus_1 = value_normalizer.denormalize(self.values[step + 1])
                 v_s_t = value_normalizer.denormalize(self.values[step])
-            else: # for PopArt or no normalization
+            else: # or no normalization
                 v_s_t_plus_1 = self.values[step + 1]
                 v_s_t = self.values[step]
 

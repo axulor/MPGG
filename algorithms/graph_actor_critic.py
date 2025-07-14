@@ -13,17 +13,16 @@ from utils.util import get_shape_from_obs_space
 
 class GR_Actor(nn.Module):
     """
-    (修改版) Actor 网络类。接收个体观测和预处理的 GNN 特征，输出动作。
-    不再内部管理 GNN。
+    Actor 网络类。接收个体观测和预处理的 GNN 特征，输出动作。
     """
     def __init__(
         self,
         args: argparse.Namespace,
-        actor_mlp_input_dim: int, # 个体观测维度 + GNN节点嵌入维度
+        actor_mlp_input_dim: int, # GNN节点嵌入维度
         action_space: gym.Space,  # 动作空间用于 ACTLayer
         device=torch.device("cpu"),
         split_batch: bool = True, 
-        max_batch_size: int = 1024, # 默认最大batch_size
+        max_batch_size: int = 1024, 
     ) -> None:
         
         super(GR_Actor, self).__init__()
@@ -40,7 +39,7 @@ class GR_Actor(nn.Module):
         self.tpdv = dict(dtype=torch.float32, device=device)
 
         # 实例化 MLPBase
-        self.base = MLPBase(args, input_dim=actor_mlp_input_dim) # input_dim 是拼接后的总维度
+        self.base = MLPBase(args, input_dim=actor_mlp_input_dim) # input_dim 是GNN节点嵌入维度
 
         # 实例化 ACTLayer 
         self.act = ACTLayer(action_space, self.hidden_size, self.use_orthogonal, self.gain)
@@ -49,18 +48,13 @@ class GR_Actor(nn.Module):
 
 
     def forward(self, 
-                obs: Tensor,              # 个体观测, 形状 (B, D_obs)
                 actor_gnn_feat: Tensor    # GNN处理后的节点嵌入, 形状 (B, D_actor_gnn_out)
             ) -> Tuple[Tensor, Tensor]:
         """
         接收个体观测和预计算的GNN节点嵌入, 拼接后通过MLP和ACTLayer输出动作
         B 是当前处理的批次大小 M*N
         """
-        obs = check(obs).to(**self.tpdv)
         actor_gnn_feat = check(actor_gnn_feat).to(**self.tpdv)
-
-        # # 拼接个体观测和 GNN 输出的邻域特征
-        # combined_features = torch.cat([obs, actor_gnn_feat], dim=1)  # 形状 (B, D_obs + D_actor_gnn_out)
 
         # 对于较大的特征批次手动分块处理 MLP 部分
         if self.split_batch and actor_gnn_feat.shape[0] > self.max_batch_size:
@@ -90,7 +84,6 @@ class GR_Actor(nn.Module):
 
     def evaluate_actions(
         self,
-        # obs: Tensor,              # 个体观测, 形状 (B, D_obs)
         actor_gnn_feat: Tensor,   # GNN处理后的节点嵌入, 形状 (B, D_actor_gnn_out)
         actions: Tensor,            # 实际执行的动作, 形状 (B, action_dim)
     ) -> Tuple[Tensor, Tensor]:
@@ -98,12 +91,8 @@ class GR_Actor(nn.Module):
         评估给定动作的对数概率和策略熵。
         B 是当前处理的批次大小。
         """
-        # obs = check(obs).to(**self.tpdv)
         actor_gnn_feat = check(actor_gnn_feat).to(**self.tpdv)
         actions = check(actions).to(**self.tpdv)
-
-        # 拼接个体观测和 GNN 特征 
-        # combined_features = torch.cat([obs, actor_gnn_feat], dim=1)
 
         # 分块处理 MLP (与 forward 方法中相同)
         if self.split_batch and actor_gnn_feat.shape[0] > self.max_batch_size:

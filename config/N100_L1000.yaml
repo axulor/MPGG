@@ -89,6 +89,4 @@ eval_rounds: 80
 eval_steps_per_round: 800
 
 # === 是否加载预训练模型 ===
-# 在训练时，通常将 model_dir 设为 null 或留空
-# 在分析时，外部脚本会覆盖此值
 model_dir: null
