@@ -77,7 +77,7 @@ def make_eval_env(all_args: SimpleNamespace):
             eval_env_args = SimpleNamespace(**vars(all_args))
             env = MultiAgentGraphEnv(eval_env_args)
             env.seed(eval_seed)
-            return env
+            return env 
         return init_env
 
     print(f"  创建 {all_args.n_eval_rollout_threads} 个并行 SubprocVecEnv 用于评估")

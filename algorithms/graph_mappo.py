@@ -74,8 +74,12 @@ class GR_MAPPO():
         if self.use_popart:
             self.value_normalizer.update(returns_batch)
             returns_batch_norm = self.value_normalizer.normalize(returns_batch)
-            value_pred_clipped_norm = self.value_normalizer.normalize(value_pred_clipped)
-            values_norm = self.value_normalizer.normalize(values)
+
+            # value_pred_clipped_norm = self.value_normalizer.normalize(value_pred_clipped)
+            # values_norm = self.value_normalizer.normalize(values)
+
+            values_norm = values
+            value_pred_clipped_norm = value_pred_clipped
             
             error_clipped = returns_batch_norm - value_pred_clipped_norm
             error_original = returns_batch_norm - values_norm
