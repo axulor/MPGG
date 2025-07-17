@@ -135,36 +135,35 @@ class MultiAgentGraphEnv(gym.Env):
     
     # def step(self, action_n: List) -> Tuple[arr, arr, arr, arr, arr, arr, List[Dict]]:
     #     """
-    #     Return:
-    #     - obs:          观测数组
-    #     - agent_id:     节点id数组
-    #     - adj:        邻接矩阵数组
-    #     - reward:     奖励数组
-    #     - done:       完成布尔数组
-    #     - info:       信息字典列表
-
+    #     [重构后的 Step 函数]
+    #     执行移动 -> 调用模拟器评估 -> 获取状态
     #     """
-    #     # 更新 step 计数
     #     self.current_steps += 1
         
-    #     # 执行移动
-    #     self._update_positions(action_n) # 更新位置和方向
-    #     self._update_dist_adj()  # 更新距离邻接矩阵
+    #     # 1. 智能体根据RL策略移动 (慢时间尺度)
+    #     self._update_positions(action_n)
+    #     self._update_dist_adj()
 
-    #     # 执行博弈
-    #     payoffs = self._compute_payoffs() # 计算博弈收益
-    #     self._record_payoffs(payoffs)  # 记录智能体当前收益
-    #     self._update_strategies(payoffs) # Fermi规则更新智能体策略
+    #     # 2. 准备并运行内部演化博弈模拟 (快时间尺度，虚拟评估)
+    #     #    提取所有智能体的固定策略（身份）
+    #     initial_strategies = np.array([agent.strategy[0] for agent in self.agents])
+        
+    #     #    调用模拟器进行虚拟评估，它返回对当前空间位置的适应性得分
+    #     evolutionary_scores = self.simulator.run_simulation(initial_strategies, self.dist_adj)
+        
+    #     # 3. 将模拟得到的适应性得分作为本宏观步骤的奖励
+    #     #    注意：模拟器不再改变 agent.strategy
+    #     self._record_payoffs(evolutionary_scores)
 
-    #     # 执行观测
-    #     obs, reward, adj, done, info = self._get_env_state()       
-
+    #     # 4. 获取环境状态并返回给RL算法
+    #     obs, reward, adj, done, info = self._get_env_state()  
+        
     #     return obs, reward, adj, done, info
-    
-    def step(self, action_n: List) -> Tuple[arr, arr, arr, arr, arr, arr, List[Dict]]:
+
+    def step(self, action_n: List) :
         """
-        [重构后的 Step 函数]
-        执行移动 -> 调用模拟器评估 -> 获取状态
+        [混合演化模型的 Step 函数]
+        RL移动 -> 模拟器评估收益 -> 真实策略演化 -> 获取环境状态
         """
         self.current_steps += 1
         
@@ -172,18 +171,28 @@ class MultiAgentGraphEnv(gym.Env):
         self._update_positions(action_n)
         self._update_dist_adj()
 
-        # 2. 准备并运行内部演化博弈模拟 (快时间尺度，虚拟评估)
-        #    提取所有智能体的固定策略（身份）
-        initial_strategies = np.array([agent.strategy[0] for agent in self.agents])
+        # 2. 调用模拟器进行“虚拟评估”以计算本轮奖励
+        #    输入的是当前“真实”的策略和位置
+        current_real_strategies = np.array([agent.strategy[0] for agent in self.agents])
         
-        #    调用模拟器进行虚拟评估，它返回对当前空间位置的适应性得分
-        evolutionary_scores = self.simulator.run_simulation(initial_strategies, self.dist_adj)
+        #    模拟器运行，但它的目的【仅仅是】为了计算出智能体在当前位置的
+        #    “演化适应性得分” (Evolutionary Fitness Score)。
+        #    这个得分将作为RL的奖励。
+        #    我们把这个返回值命名为 reward_payoffs 以明确其用途。
+        reward_payoffs = self.simulator.run_simulation(current_real_strategies, self.dist_adj)
         
-        # 3. 将模拟得到的适应性得分作为本宏观步骤的奖励
-        #    注意：模拟器不再改变 agent.strategy
-        self._record_payoffs(evolutionary_scores)
+        # 3. 将模拟得到的适应性得分作为本宏观步骤的【奖励】
+        self._record_payoffs(reward_payoffs) # agent.current_payoff 更新，用于计算reward
 
-        # 4. 获取环境状态并返回给RL算法
+        # 4. 【关键新增步骤】执行一次“真实策略演化”
+        #    使用刚刚计算出的、代表长期潜力的 reward_payoffs，
+        #    在【真实环境】中根据Fermi规则进行【一次】策略更新。
+        #    这会直接修改 self.agents 中智能体的 agent.strategy 属性。
+        self._update_strategies(reward_payoffs) # 这个函数现在被重新启用了！
+
+        # 5. 获取环境状态并返回给RL算法
+        #    返回的 obs 将包含可能已经改变了的新策略。
+        #    奖励是基于移动前的策略、在移动后的位置上评估得出的。
         obs, reward, adj, done, info = self._get_env_state()  
         
         return obs, reward, adj, done, info
@@ -313,12 +322,79 @@ class MultiAgentGraphEnv(gym.Env):
                 
     #     return payoffs
 
-
     def _record_payoffs(self, payoffs: np.ndarray) -> None:
         """ 更新 agent.current_payoff """
         for i, agent in enumerate(self.agents):
             agent.current_payoff = np.array([payoffs[i]], dtype=np.float32)
 
+    def _update_strategies(self, payoffs: np.ndarray) -> None:
+        """
+        [MODIFIED] 根据模拟器返回的长期适应性收益，同步更新所有智能体的真实策略。
+
+        此函数执行以下操作：
+        1. 对输入的收益数组 `payoffs` 进行归一化，使其范围在 [0, 1] 之间。
+        2. 对每个智能体 i，从其半径范围内的 k 个最近邻居中，随机选择一个邻居 j。
+        3. 使用归一化后的收益差，通过 Fermi 规则计算模仿概率。
+        4. 以该概率，智能体 i 在下一步骤将采纳智能体 j 的策略。
+        5. 所有智能体的策略是同步更新的。
+        """
+        N = self.num_agents
+        adj = self.dist_adj
+        
+        # 1. 【关键修改】对输入的收益进行归一化
+        min_p = np.min(payoffs)
+        max_p = np.max(payoffs)
+        
+        normalized_payoffs = np.full_like(payoffs, 0.5) # 默认值
+        if max_p - min_p > 1e-7: # 避免除以零
+            normalized_payoffs = (payoffs - min_p) / (max_p - min_p)
+
+        # 准备一个数组来存储下一轮的策略
+        next_strategies = [agent.strategy.copy() for agent in self.agents]
+        
+        # 对每个智能体进行策略更新决策
+        for i in range(N):
+            # 2. 【关键修改】选择可见邻居 (k-nearest within radius)
+            
+            # 获取智能体 i 的所有距离数据
+            distances_i = adj[i].copy()
+            
+            # 排除自身和超出半径的个体，将它们的距离设为无穷大
+            distances_i[i] = np.inf 
+            distances_i[distances_i > self.radius] = np.inf
+            
+            # 对距离进行排序，得到邻居的索引
+            sorted_neighbor_indices = np.argsort(distances_i)
+            
+            # 从排序后的索引中，选出所有有效的邻居（距离不是无穷大）
+            valid_neighbors = sorted_neighbor_indices[distances_i[sorted_neighbor_indices] != np.inf]
+            
+            # 从有效邻居中，最多选择 k 个
+            # getattr(self, 'k_neighbors', N) 会尝试获取 k_neighbors，如果不存在则默认为所有邻居
+            k = getattr(self, 'k_neighbors', N) 
+            visible_neighbors = valid_neighbors[:k]
+
+            # 如果没有可见的邻居，则不更新策略
+            if len(visible_neighbors) == 0:
+                continue
+                
+            # 3. 从可见邻居中随机选择一个模仿对象
+            j = self.np_random.choice(visible_neighbors)
+            
+            # 4. 使用【归一化后】的收益计算 Fermi 规则
+            delta_payoff = normalized_payoffs[j] - normalized_payoffs[i]
+            
+            # 为避免 exp 溢出，可以对输入进行裁剪 (可选但推荐)
+            exp_arg = np.clip(-self.beta * delta_payoff, -700, 700)
+            prob_adopt = 1 / (1 + np.exp(exp_arg))
+            
+            # 5. 以计算出的概率进行模仿
+            if self.np_random.random() < prob_adopt:
+                next_strategies[i] = self.agents[j].strategy.copy()
+
+        # 6. 所有决策完成后，同步更新所有智能体的策略
+        for i, agent in enumerate(self.agents):
+            agent.strategy = next_strategies[i]
 
     # def _update_strategies(self, payoffs: np.ndarray) -> None: # 参数类型改为 np.ndarray
     #     """ 同步更新 agent.strategy """

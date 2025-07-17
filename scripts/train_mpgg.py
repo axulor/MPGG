@@ -27,7 +27,7 @@ from runner.graph_mpe_runner import GMPERunner as Runner # 导入图环境 Runne
 from utils.util import print_box, print_args # 打印工具
 
 # 在这里指定配置文件名
-CONFIG_NAME = "N25_L100.yaml"
+CONFIG_NAME = "N100_L100_K4_R4.yaml"
 
 def load_config(config_name):
     """从YAML文件加载配置并转换为SimpleNamespace对象"""
@@ -77,7 +77,7 @@ def make_eval_env(all_args: SimpleNamespace):
             eval_env_args = SimpleNamespace(**vars(all_args))
             env = MultiAgentGraphEnv(eval_env_args)
             env.seed(eval_seed)
-            return env 
+            return env
         return init_env
 
     print(f"  创建 {all_args.n_eval_rollout_threads} 个并行 SubprocVecEnv 用于评估")

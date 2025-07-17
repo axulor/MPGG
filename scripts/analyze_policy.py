@@ -248,13 +248,13 @@ def main():
     config = SimpleNamespace(
         # --- 路径配置 ---
         # 训练时使用的配置文件名 (e.g., N100_L1000.yaml)
-        config_name = "N100_L1000.yaml",
+        config_name = "N100_L100_K4_R4.yaml",
         
         # 已训练模型的完整运行路径 (e.g., results/your_username/...)
-        model_run_path = "results/local_optimized_N100_L1000_K4_R4.0/run3",
+        model_run_path = "results/local_optimized_N100_L100_K4_R4.0/run4",
 
         # 要加载的模型文件名
-        model_filename = "checkpoint_ep200.pt",
+        model_filename = "checkpoint_ep2000.pt",
 
         # --- 模拟与渲染配置 ---
         # 寻找代表性轨迹时的并行环境数
@@ -264,7 +264,7 @@ def main():
         num_rounds = 10,
         
         # 每次模拟的最大步数
-        simulation_steps = 800,
+        simulation_steps = 500,
         
         # 生成GIF的帧率
         fps = 30,
