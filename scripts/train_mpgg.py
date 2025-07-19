@@ -27,7 +27,7 @@ from runner.graph_mpe_runner import GMPERunner as Runner # 导入图环境 Runne
 from utils.util import print_box, print_args # 打印工具
 
 # 在这里指定配置文件名
-CONFIG_NAME = "N100_L100_K4_R4.yaml"
+CONFIG_NAME = "N100_L100_K4_R2.yaml"
 
 def load_config(config_name):
     """从YAML文件加载配置并转换为SimpleNamespace对象"""

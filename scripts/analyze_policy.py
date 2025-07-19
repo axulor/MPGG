@@ -8,15 +8,14 @@ from pathlib import Path
 import os
 import sys
 import yaml
-import argparse  # [MODIFIED] 导入argparse
 from types import SimpleNamespace
 
-# --- 1. 将项目根目录添加到Python路径 ---
+# 将项目根目录添加到Python路径
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-# --- 2. 导入项目所需的模块 ---
+# 导入项目所需的模块
 from envs.marl_env import MultiAgentGraphEnv
 from envs.env_wrappers import GraphSubprocVecEnv
 from algorithms.graph_MAPPOPolicy import GR_MAPPOPolicy
@@ -24,7 +23,7 @@ from utils.util import print_box
 
 def load_config_and_args(script_config: SimpleNamespace) -> SimpleNamespace:
     """
-    [REVISED] 基于脚本内定义的配置，加载YAML文件并合并参数。
+    基于脚本内定义的配置, 加载YAML文件并合并参数。
     """
     config_path = Path(project_root) / "config" / script_config.config_name
     if not config_path.exists():
@@ -38,7 +37,6 @@ def load_config_and_args(script_config: SimpleNamespace) -> SimpleNamespace:
     args = SimpleNamespace(**config_dict)
     
     # 用脚本中的配置覆盖或添加YAML中的设置
-    # 这是关键步骤，确保了脚本内配置的优先权
     args.model_dir = str(Path(script_config.model_run_path) / "models")
     args.cuda = torch.cuda.is_available()
     
@@ -47,8 +45,6 @@ def load_config_and_args(script_config: SimpleNamespace) -> SimpleNamespace:
     args.fps = script_config.fps
 
     # 将YAML中没有，但策略或环境初始化可能需要的其他参数也合并进去
-    # 例如 num_agents, hidden_size 等通常在YAML里，但如果不在，可以在这里添加
-    # 合并两个 SimpleNamespace 对象
     for key, value in vars(script_config).items():
         if not hasattr(args, key):
             setattr(args, key, value)
@@ -248,13 +244,13 @@ def main():
     config = SimpleNamespace(
         # --- 路径配置 ---
         # 训练时使用的配置文件名 (e.g., N100_L1000.yaml)
-        config_name = "N100_L100_K4_R4.yaml",
+        config_name = "N100_L100_K4_R3.yaml",
         
         # 已训练模型的完整运行路径 (e.g., results/your_username/...)
-        model_run_path = "results/local_optimized_N100_L100_K4_R4.0/run4",
+        model_run_path = "results/local_optimized_N100_L100_K4_R3.0/run3",
 
         # 要加载的模型文件名
-        model_filename = "checkpoint_ep2000.pt",
+        model_filename = "checkpoint_ep1100.pt",
 
         # --- 模拟与渲染配置 ---
         # 寻找代表性轨迹时的并行环境数

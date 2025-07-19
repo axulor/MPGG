@@ -341,6 +341,15 @@ class GNNBase(nn.Module):
         distance = adj[b, src_local, dst_local].unsqueeze(-1)
         distance_normalized = distance / self.args.radius
 
+        payoffs = node_obs[..., 5] 
+    
+        payoff_i = payoffs[b, src_local] 
+        payoff_j = payoffs[b, dst_local]  
+        
+        payoff_difference = payoff_j - payoff_i
+
+        normalized_payoff_diff = torch.tanh(payoff_difference).unsqueeze(-1)
+
         edge_attr = torch.cat([rel_pos, strat_one_hot, distance_normalized], dim=-1)
         
         return edge_index, edge_attr
