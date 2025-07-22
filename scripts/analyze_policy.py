@@ -183,13 +183,21 @@ class PolicyAnalyzer:
             print("Error: No simulation data collected."); return
 
         all_final_rewards = np.concatenate(all_final_rewards)
-        avg_reward = np.mean(all_final_rewards)
-        best_run_idx = np.argmin(np.abs(all_final_rewards - avg_reward))
+        # avg_reward = np.mean(all_final_rewards)
+        # best_run_idx = np.argmin(np.abs(all_final_rewards - avg_reward))
+        # representative_seed = all_initial_seeds[best_run_idx]
+        # final_reward_of_best_run = all_final_rewards[best_run_idx]
+
+        # print(f"\nFound representative run (index {best_run_idx}) with seed {representative_seed}.")
+        # print(f"Its final reward {final_reward_of_best_run.item():.4f} is closest to the average {avg_reward:.4f}.")
+
+        best_run_idx = np.argmax(all_final_rewards)
+
         representative_seed = all_initial_seeds[best_run_idx]
         final_reward_of_best_run = all_final_rewards[best_run_idx]
 
-        print(f"\nFound representative run (index {best_run_idx}) with seed {representative_seed}.")
-        print(f"Its final reward {final_reward_of_best_run.item():.4f} is closest to the average {avg_reward:.4f}.")
+        print(f"\nFound best run (index {best_run_idx}) with seed {representative_seed}.")
+        print(f"Its final reward {final_reward_of_best_run.item():.4f} is the highest among all runs.")
 
 
         snapshot_dir = output_dir / f"snapshots_for_{gif_filename.replace('.gif', '')}"
@@ -205,7 +213,6 @@ class PolicyAnalyzer:
         obs_list, _, adj_np, _, _ = render_env.reset()
         obs_np = np.array(obs_list)
         
-        # [CRITICAL FIX] 移除了渲染循环中的RNN状态处理
         for step_t in range(num_steps):
             frame = render_env.render(mode='rgb_array')
             if frame is not None:

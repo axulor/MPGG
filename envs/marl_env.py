@@ -42,6 +42,11 @@ class MultiAgentGraphEnv(gym.Env):
         self.beta = args.beta # Selection intensity for Fermi rule
         self.k_neighbors = getattr(args, 'k_neighbors', 0) # k for k-NN interactions
 
+        # Parameters for the "Strategically-Guided Motion with Personal Space" model
+        # This radius defines the "personal space" for the Separation rule.
+        self.separation_radius = getattr(args, 'separation_radius', 0.125)
+
+
         # --- Seeding ---
         self.seed_val = args.seed 
         self.np_random, _ = seeding.np_random(self.seed_val)
@@ -74,7 +79,7 @@ class MultiAgentGraphEnv(gym.Env):
         node_obs_dim_tuple = (self.num_agents, obs_dim) 
         adj_dim_tuple = (self.num_agents, self.num_agents)
         agent_id_dim_tuple = (1,)
-        edge_dim_tuple = (7,) 
+        edge_dim_tuple = (8,) 
 
         self.node_observation_space = [spaces.Box(low=-np.inf, high=+np.inf, shape=node_obs_dim_tuple, dtype=np.float32)] * self.num_agents
         self.adj_observation_space = [spaces.Box(low=0, high=+np.inf, shape=adj_dim_tuple, dtype=np.float32)] * self.num_agents
@@ -94,13 +99,10 @@ class MultiAgentGraphEnv(gym.Env):
         return seed
 
     def reset(self, seed=None, options=None):
-        # Allow seeding on reset
         if seed is not None:
             self.seed(seed)
             
         self.current_steps = 0
-
-        # Initial random placement and strategy assignment
         shuffled_agents = list(self.agents) 
         self.np_random.shuffle(shuffled_agents) 
         half = (self.num_agents + 1) // 2  
@@ -113,171 +115,236 @@ class MultiAgentGraphEnv(gym.Env):
             agent.strategy = np.array([1 if agent in cooperators else 0], dtype=np.int32)
 
         self._update_dist_adj()
-
         obs, reward, adj, done, info = self._get_env_state()
-        
-        # Gymnasium API expects obs and info as dicts for multi-agent envs, but let's stick to the project's list-based format for now.
         return obs, reward, adj, done, info
     
     def step(self, action_n: List) -> Tuple[arr, arr, arr, arr, List[Dict]]:
-        """
-        Executes one time step following the new "real game" logic.
-        Flow: Move -> Play PGG -> Get Reward -> Evolve Strategy -> Observe
-        """
         self.current_steps += 1
-        
-        # 1. Agents move based on RL policy actions
         self._update_positions(action_n)
         self._update_dist_adj()
-
-        # 2. Play a single round of PGG to calculate payoffs
-        # This function now computes the "average net payoff" for each agent.
         average_net_payoffs = self._calculate_pgg_payoffs()
-        
-        # 3. The calculated payoff is the agent's reward for the RL algorithm
         self._record_payoffs(average_net_payoffs)
-
-        # 4. Agents evolve their strategies based on the payoffs from this step
         self._update_strategies(average_net_payoffs)
-
-        # 5. Get the new environment state (with updated positions and possibly new strategies)
         obs, reward, adj, done, info = self._get_env_state()  
-        
         return obs, reward, adj, done, info
 
     def _get_k_neighbor_mask(self, adj: np.ndarray) -> np.ndarray:
-        """
-        Calculates the k-nearest neighbor interaction mask, identical to the
-        logic previously in pgg_sim.py.
-
-        Returns a boolean mask (N, N), where mask[i, j] = True means agent j
-        is one of i's k-nearest neighbors within the radius.
-        """
         N = self.num_agents
-        
         if self.k_neighbors <= 0:
-            # Fallback to radius-based interaction if k is not specified
             return (adj > 0) & (adj <= self.radius)
-
         distances = adj.copy()
-        # Exclude self and agents outside the radius
         mask = (adj == 0) | (adj > self.radius)
         distances[mask] = np.inf
-
         k = min(self.k_neighbors, N - 1)
-        
-        # Get indices of the k nearest neighbors for each agent
         k_nearest_indices = np.argsort(distances, axis=1)[:, :k]
-
-        # Create the boolean mask
         interaction_mask = np.zeros_like(adj, dtype=bool)
         rows = np.arange(N).repeat(k)
         cols = k_nearest_indices.flatten()
-        
-        # Only mark as True if the neighbor is actually within radius (not infinity)
         is_valid_neighbor = (distances[rows, cols] != np.inf)
         interaction_mask[rows[is_valid_neighbor], cols[is_valid_neighbor]] = True
-        
         return interaction_mask
     
+    # def _calculate_pgg_payoffs(self) -> np.ndarray:
+    #     N = self.num_agents
+    #     strategies = np.array([agent.strategy[0] for agent in self.agents], dtype=np.float32)
+    #     focal_game_mask = self._get_k_neighbor_mask(self.dist_adj)
+    #     focal_game_mask_with_self = focal_game_mask | np.eye(N, dtype=bool)
+    #     game_group_sizes = focal_game_mask_with_self.sum(axis=1)
+    #     game_num_cooperators = strategies @ focal_game_mask_with_self.T
+    #     avg_pool_payouts = np.divide(
+    #         game_num_cooperators * self.cost * self.r,
+    #         game_group_sizes,
+    #         out=np.zeros_like(game_num_cooperators, dtype=np.float32),
+    #         where=(game_group_sizes > 0)
+    #     )
+    #     total_gross_gains = avg_pool_payouts @ focal_game_mask_with_self.T
+    #     n_games_played = focal_game_mask_with_self.T.sum(axis=0)
+    #     total_costs = strategies * n_games_played * self.cost
+    #     total_net_gains = total_gross_gains - total_costs
+    #     average_net_payoffs = np.divide(
+    #         total_net_gains,
+    #         n_games_played,
+    #         out=np.zeros_like(total_net_gains),
+    #         where=(n_games_played > 0)
+    #     )
+    #     return average_net_payoffs
+
     def _calculate_pgg_payoffs(self) -> np.ndarray:
         """
-        Vectorized calculation of each agent's "average net payoff" from a single
-        round of the Public Goods Game. This function replaces the simulator.
+        Calculates payoffs based on a 'self-initiated game' model using vectorized operations.
+        Each agent 'i' receives a payoff ONLY from the single game it initiates.
+        The participants of this game are agent 'i' and its k-nearest neighbors.
         """
         N = self.num_agents
         strategies = np.array([agent.strategy[0] for agent in self.agents], dtype=np.float32)
-        
-        # 1. Determine who interacts with whom (directed k-NN graph)
+
+        # 1. Determine the interaction groups for games initiated by each agent.
+        #    focal_game_mask[i, j] = True means agent j is a neighbor of i.
         focal_game_mask = self._get_k_neighbor_mask(self.dist_adj)
         
-        # 2. Define game groups: each agent 'i' initiates a game with itself and its neighbors
+        #    Add self to the group. `focal_game_mask_with_self[i, :]` are all participants
+        #    in the game initiated by agent i.
         focal_game_mask_with_self = focal_game_mask | np.eye(N, dtype=bool)
-        
-        # 3. Calculate payouts for each of the N initiated games
+
+        # 2. Calculate the size of each game group.
+        #    game_group_sizes[i] is the number of participants in the game started by i.
         game_group_sizes = focal_game_mask_with_self.sum(axis=1) # Shape (N,)
+
+        # 3. Calculate the number of cooperators in each initiated game.
+        #    This is the sum of strategies of all participants for each game.
+        #    game_num_cooperators[i] is the number of cooperators in game 'i'.
         game_num_cooperators = strategies @ focal_game_mask_with_self.T # Shape (N,)
-        
-        avg_pool_payouts = np.divide(
+
+        # 4. Calculate the gross per-capita payout FROM each initiated game.
+        #    This is the amount each participant would get from the pool in the game initiated by agent 'i'.
+        #    This vector represents the gross payoff for the initiator of each game.
+        gross_payout_per_game = np.divide(
             game_num_cooperators * self.cost * self.r,
             game_group_sizes,
             out=np.zeros_like(game_num_cooperators, dtype=np.float32),
             where=(game_group_sizes > 0)
         )
 
-        # 4. Calculate total gross gains for each agent
-        # Agent j's gross gain is the sum of payouts from all games it participated in.
-        total_gross_gains = avg_pool_payouts @ focal_game_mask_with_self.T # Shape (N,)
-
-        # 5. Calculate total costs for each agent
-        # Agent j's number of games is the count of how many times it appears in any group.
-        n_games_played = focal_game_mask_with_self.T.sum(axis=0) # Shape (N,)
-        total_costs = strategies * n_games_played * self.cost # Shape (N,)
-
-        # 6. Calculate net gains and the final average payoff
-        total_net_gains = total_gross_gains - total_costs
-        average_net_payoffs = np.divide(
-            total_net_gains,
-            n_games_played,
-            out=np.zeros_like(total_net_gains),
-            where=(n_games_played > 0)
-        )
+        # 5. Calculate the net payoff for each agent.
+        #    The cost for agent 'i' is simply `self.cost` if it's a cooperator, and 0 otherwise.
+        #    It only pays this cost once for the game it initiates.
+        costs = strategies * self.cost # Shape (N,)
         
-        return average_net_payoffs
+        #    The net payoff for agent 'i' is the gross payout from its own game minus its own cost.
+        #    This is a simple element-wise subtraction.
+        net_payoffs = gross_payout_per_game - costs
+
+        return net_payoffs
     
+    # def _update_strategies(self, payoffs: np.ndarray) -> None:
+    #     N = self.num_agents
+    #     neighbor_mask = self._get_k_neighbor_mask(self.dist_adj)
+    #     current_strategies = np.array([agent.strategy.copy() for agent in self.agents])
+    #     next_strategies = current_strategies.copy()
+    #     for i in range(N):
+    #         visible_neighbor_indices = np.where(neighbor_mask[i])[0]
+    #         if len(visible_neighbor_indices) == 0:
+    #             continue
+    #         j = self.np_random.choice(visible_neighbor_indices)
+    #         delta_payoff = payoffs[j] - payoffs[i]
+    #         prob_adopt = 1 / (1 + np.exp(-self.beta * delta_payoff))
+    #         if self.np_random.random() < prob_adopt:
+    #             next_strategies[i] = current_strategies[j]
+    #     for i, agent in enumerate(self.agents):
+    #         agent.strategy = next_strategies[i]
+
     def _update_strategies(self, payoffs: np.ndarray) -> None:
         """
-        Synchronously updates all agents' strategies based on the Fermi rule,
-        using the calculated payoffs from the current step. Each agent looks
-        at one randomly chosen k-nearest neighbor to potentially imitate.
+        Asynchronously updates one randomly chosen agent's strategy based on the
+        Fermi rule. In each call to this function, only one agent gets the
+        opportunity to update its strategy.
         """
         N = self.num_agents
         
-        # Get the same interaction mask used for payoff calculation
+        # 1. Randomly select ONE agent to potentially update its strategy.
+        #    This is the core of asynchronous updating.
+        focal_agent_id = self.np_random.integers(N)
+        focal_agent = self.agents[focal_agent_id]
+
+        # 2. Find the neighbors of this specific agent.
         neighbor_mask = self._get_k_neighbor_mask(self.dist_adj)
-        current_strategies = np.array([agent.strategy.copy() for agent in self.agents])
-        next_strategies = current_strategies.copy()
+        visible_neighbor_indices = np.where(neighbor_mask[focal_agent_id])[0]
 
-        # Iterate through each agent to decide its next strategy
-        for i in range(N):
-            # Find agent i's potential imitation targets
-            visible_neighbor_indices = np.where(neighbor_mask[i])[0]
+        # 3. If the agent has no neighbors, it cannot imitate anyone.
+        if len(visible_neighbor_indices) == 0:
+            return # No update occurs in this step.
 
-            if len(visible_neighbor_indices) == 0:
-                continue # No neighbors, no change in strategy
+        # 4. Randomly select ONE neighbor from its neighborhood to compare with.
+        imitated_neighbor_id = self.np_random.choice(visible_neighbor_indices)
+        imitated_neighbor = self.agents[imitated_neighbor_id]
+        
+        # 5. Apply the Fermi rule to decide whether to adopt the neighbor's strategy.
+        #    The payoffs vector is from the current state of the environment.
+        delta_payoff = payoffs[imitated_neighbor_id] - payoffs[focal_agent_id]
+        prob_adopt = 1 / (1 + np.exp(-self.beta * delta_payoff))
+        
+        # 6. If the agent decides to adopt, update its strategy IMMEDIATELY.
+        if self.np_random.random() < prob_adopt:
+            focal_agent.strategy = imitated_neighbor.strategy.copy()
 
-            # Randomly select one neighbor to compare with
-            j = self.np_random.choice(visible_neighbor_indices)
-            
-            # Use Fermi rule to determine probability of adopting neighbor's strategy
-            delta_payoff = payoffs[j] - payoffs[i]
-            prob_adopt = 1 / (1 + np.exp(-self.beta * delta_payoff))
-            
-            # Decide whether to adopt
-            if self.np_random.random() < prob_adopt:
-                next_strategies[i] = current_strategies[j]
-
-        # Synchronously apply the new strategies to all agents
-        for i, agent in enumerate(self.agents):
-            agent.strategy = next_strategies[i]
 
     def _update_positions(self, action_n: List[arr]) -> None:
-        """Updates agent positions based on actions (no changes from original)."""
-        if len(action_n) != self.num_agents:
-            print(f"Warning: action list length mismatch.")
+        """
+        Updates agent positions based on a hard physical embodiment constraint.
+        This involves a two-stage process:
+        1. Propose a move based on the RL policy.
+        2. Detect and resolve any "collisions" (violations of personal space).
+        """
+        N = self.num_agents
+        if N == 0:
             return
+            
+        positions = np.array([agent.position for agent in self.agents])
 
-        for i, agent in enumerate(self.agents):
-            action = np.array(action_n[i], dtype=np.float32).flatten()
+        # --- Stage 1: Propose New Positions based on RL Policy ---
+        proposed_positions = np.zeros_like(positions)
+        for i in range(N):
+            agent = self.agents[i]
+            rl_action = np.array(action_n[i], dtype=np.float32).flatten()
+            rl_direction = self._normalize_vector(rl_action)
             
-            new_direction_vector = np.zeros(2, dtype=np.float32)
-            if action.shape[0] == 2:
-                norm = np.linalg.norm(action)
-                if norm > 1e-7:
-                    new_direction_vector = action / norm
+            # Update agent's direction based on RL policy
+            agent.direction_vector = rl_direction
             
-            agent.direction_vector = new_direction_vector
-            agent.position = (agent.position + agent.direction_vector * self.speed) % self.world_size
+            # Calculate the proposed new position
+            proposed_positions[i] = (positions[i] + rl_direction * self.speed) % self.world_size
+
+        # --- Stage 2: Iteratively Resolve Collisions ---
+        # We might need to loop a few times in case resolving one collision creates another.
+        # 5 iterations is usually more than enough for convergence.
+        for _ in range(5):
+            collisions_found = False
+            
+            # Calculate all-pairs distances for the current positions (could be proposed or corrected)
+            current_positions = proposed_positions
+            delta = current_positions[:, np.newaxis, :] - current_positions[np.newaxis, :, :]
+            delta = (delta + self.world_size / 2) % self.world_size - self.world_size / 2
+            distances = np.linalg.norm(delta, axis=2)
+            
+            for i in range(N):
+                # Find agents that are colliding with agent i
+                colliding_mask = (distances[i] > 0) & (distances[i] < self.separation_radius)
+                
+                if np.any(colliding_mask):
+                    collisions_found = True
+                    
+                    # For each collision, move both agents apart along the line connecting them.
+                    for j in np.where(colliding_mask)[0]:
+                        if i < j: # Process each pair only once to avoid double counting
+                            dist = distances[i, j]
+                            overlap = self.separation_radius - dist
+                            
+                            # The correction vector points from j to i
+                            correction_vec = delta[i, j] / (dist + 1e-9)
+                            
+                            # Move both agents apart by half of the overlap
+                            move_amount = overlap / 2.0
+                            
+                            # Apply correction and wrap around the world
+                            proposed_positions[i] = (proposed_positions[i] + correction_vec * move_amount) % self.world_size
+                            proposed_positions[j] = (proposed_positions[j] - correction_vec * move_amount) % self.world_size
+                            
+            if not collisions_found:
+                break # If no collisions in a full pass, we are done.
+
+        # --- Final Step: Apply the corrected positions to agents ---
+        for i in range(N):
+            self.agents[i].position = proposed_positions[i]
+
+    def _normalize_vector(self, vec: np.ndarray) -> np.ndarray:
+        """
+        Helper function to normalize a 2D vector.
+        Returns a zero vector if the norm is close to zero.
+        """
+        norm = np.linalg.norm(vec)
+        if norm > 1e-7:
+            return vec / norm
+        return np.zeros_like(vec, dtype=np.float32)
 
     def _update_dist_adj(self):
         """Updates the distance adjacency matrix (no changes from original)."""
@@ -331,6 +398,8 @@ class MultiAgentGraphEnv(gym.Env):
     def render(self, mode: str = 'human'):
         """Renders the environment using visualize_utils."""
         render_data = self.get_render_data()
+        # Add the repulsion radius to the render data for visualization
+        render_data['repulsion_radius'] = self.repulsion_radius
         rgb_array = visualize_utils.render_frame(
             render_data, self.world_size, self.radius, self.current_steps
         )

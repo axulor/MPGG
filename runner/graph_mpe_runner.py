@@ -150,10 +150,10 @@ class GMPERunner:
                 reset_count = 0 # 重置计数器
                 print(f"  (Runner) 所有环境已重置并 Warmup 完成。")
 
-            if episode == 0:
-                print(f"  执行初始评估...")
-                self.fast_eval(episode)
-                print("  (Runner) 评估完成.")
+            # if episode == 0:
+            #     print(f"  执行初始评估...")
+            #     self.fast_eval(episode)
+            #     print("  (Runner) 评估完成.")
 
             segment_coop_rates = np.full((self.episode_length, self.n_rollout_threads), np.nan, dtype=np.float32) # 存储合作率数据
             segment_avg_rewards = np.full((self.episode_length, self.n_rollout_threads), np.nan, dtype=np.float32) # 存储奖励数据

@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# -- Configuration for N=100, episode_length=1000 experiment
+# ---------------------------------------------------------------------------
+
+# --- 实验标识与基本设置 ---
+user_name: "local_optimized"
+experiment_name: "N100_L100_k0_r4" # 实验名，用于日志
+seed: 1
+cuda: True
+cuda_deterministic: False
+n_training_threads: 8
+n_rollout_threads: 8
+num_env_steps: 10000000
+
+# --- 环境特定参数 ---
+num_agents: 100
+world_size: 15.0
+speed: 0.05
+radius: 2.0
+cost: 1.0
+r: 4.0
+beta: 1.0
+episode_length: 100
+k_neighbors: 0
+
+# === 网络结构与特性 ===
+share_policy: True
+hidden_size: 64
+layer_N: 2
+use_ReLU: True
+use_orthogonal: True
+gain: 0.01
+use_feature_normalization: True
+use_popart: True
+use_valuenorm: False
+split_batch: True
+max_batch_size: 1024
+
+# === GNN 相关参数 ===
+use_gnn_policy: True
+gnn_hidden_size: 64
+gnn_num_heads: 4
+gnn_concat_heads: True
+gnn_layer_N: 2
+gnn_use_ReLU: True
+embed_hidden_size: 64
+embed_layer_N: 1
+embed_use_ReLU: True
+embed_add_self_loop: True
+max_edge_dist: 2.0
+graph_feat_type: "relative"
+actor_graph_aggr: "node"
+critic_graph_aggr: "global"
+global_aggr_type: "mean"
+
+# === PPO 算法参数 ===
+ppo_epoch: 4
+mini_batch_size: 1200
+entropy_coef: 0.01
+value_loss_coef: 1.0
+lr: 0.0001           # YAML中建议用标准浮点数表示
+critic_lr: 0.00001
+clip_param: 0.2
+opti_eps: 0.00001
+max_grad_norm: 5.0
+use_max_grad_norm: True
+use_clipped_value_loss: True
+use_gae: True
+gamma: 0.99
+gae_lambda: 0.95
+use_huber_loss: False
+huber_delta: 10.0
+weight_decay: 0
+
+# === 保存与日志 ===
+save_interval: 20
+log_interval: 1
+global_reset_interval: 2
+
+# === 评估参数 ===
+use_eval: True
+n_eval_rollout_threads: 8
+eval_interval: 50
+eval_rounds: 80
+eval_steps_per_round: 500
+
+# === 是否加载预训练模型 ===
+model_dir: null
